@@ -21,10 +21,10 @@ classDiagram
       +close()
     }
     class CMExchange {
-      +describe() conservative has
+      +describe() dict
     }
     class CMAsyncExchange {
-      +describe() conservative has
+      +describe() dict
     }
     class CustomREST {
       +sign()
