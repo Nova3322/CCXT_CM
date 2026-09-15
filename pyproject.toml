@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ccxt-cm"
+version = "0.1.0"
+description = "Thin, capability-honest Python extensions for official CCXT and CCXT Pro"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["ccxt>=4.5.78,<4.6"]
+
+[project.urls]
+Repository = "https://github.com/Nova3322/CCXT_CM"
+Documentation = "https://github.com/Nova3322/CCXT_CM/tree/main/docs"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "pytest-socket>=0.7,<1", "pytest-cov>=6,<8", "ruff>=0.12,<1", "build>=1,<2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ccxt_cm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "--disable-socket --allow-unix-socket --strict-markers"
+markers = ["loopback: uses only an in-process HTTP/WebSocket server on 127.0.0.1"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.coverage.run]
+source = ["ccxt_cm"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true

@@ -1,0 +1,41 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q --cov=ccxt_cm --cov-report=term-missing
+      - run: uv build
+      - name: Wheel smoke test in clean environment
+        run: |
+          uv venv /tmp/wheel-check
+          uv pip install --python /tmp/wheel-check/bin/python dist/*.whl
+          cd /tmp
+          /tmp/wheel-check/bin/python -c "import ccxt_cm; assert ccxt_cm.exchange_class('binance').__module__ == 'ccxt.pro.binance'"
+  latest-compatible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - run: uv sync --frozen
+      - run: uv pip install --upgrade 'ccxt>=4.5.78,<4.6'
+      - run: .venv/bin/pytest -q
