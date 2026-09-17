@@ -150,3 +150,6 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [Antarctic 审计](docs/exchanges/antarctic.md)：已发现缺陷、迁移前提。
 - [market_maker_v2 接入方案](docs/market-maker-v2.md)：当前代码映射，不声称已接入。
 - [来源与依赖](docs/sources.md)、[变更记录](CHANGELOG.md)、[贡献说明](CONTRIBUTING.md)。
+
+- [第 0 课：先看懂 CCXT](docs/learning/00-ccxt-core.md)：零基础理解统一接口，并完成第一次只读实验。
+- [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。
