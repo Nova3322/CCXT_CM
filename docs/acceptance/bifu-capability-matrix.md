@@ -18,7 +18,7 @@
 | 阶段 | 能力 | 分类 | 自动化 | 测试环境 | Jacky 人工验收 | 备注/证据 |
 |---|---|---|---|---|---|---|
 | 0 | 官方 CCXT 对照实验 | 基础学习 | 对象检查通过；全量 69 项通过 | 未通过：Binance 连接被拒，OKX 超时 | 未开始 | 2026-09-17 18:43 CST；见 `docs/learning/00-ccxt-core.md` |
-| 1 | 创建 Bifu 实例 / 环境隔离 | 基础设施 | 未开始 | 未开始 | 未开始 | 测试、生产 URL 和实例不得混用 |
+| 1 | 创建 Bifu 实例 / 环境隔离 | 基础设施 | 9 项通过 | 公共主机探活通过；业务接口未开始 | Jacky 已验收（2026-09-18） | 生产配置禁用；测试、生产 URL 和实例不得混用 |
 | 2 | `load_markets` / markets | 普通接口 | 未开始 | 未开始 | 未开始 | 交易对、精度、限额 |
 | 3 | ticker / order book | 普通接口 | 未开始 | 未开始 | 未开始 | 行情与盘口方向 |
 | 4 | `fetch_trades` / OHLCV | 普通接口 | 未开始 | 未开始 | 未开始 | 公共成交记录，不是创建订单 |
@@ -68,3 +68,28 @@ Jacky 手动命令与结果：
 - Jacky 手动验收：未开始；完成 `docs/learning/00-ccxt-core.md` 的五个问题后再更新。
 - 双轴复审：规范审查与需求审查指出可复现命令、证据脱敏、协议来源和重复阶段编号问题，均已
   修正。变更只有文档与索引，没有新增运行时代码或调用点；敏感值扫描无命中。
+
+### 2026-09-17：阶段 1 创建 Bifu 实例与环境隔离
+
+- 日期时间：2026-09-17 22:34 CST（Asia/Shanghai）。
+- 候选版本：working tree，基于 `origin/Jacky@c8f870b`；适配器 commit 在 Jacky 手动验收并同步
+  分支后补记。Python 3.14.7、CCXT 4.5.78。
+- 功能：显式注册 Bifu async REST 类；使用 CCXT `set_sandbox_mode(True)` 选择测试环境；生产
+  URL 默认关闭且当前禁止注入；测试实例与关闭的生产占位实例不共享凭据和 URL。
+- 自动化：`pytest -q tests/test_bifu_environment.py`，**9 passed**。
+- 全库复测：`pytest -q --cov=ccxt_cm --cov-report=term-missing`，**78 passed**，核心包
+  statement/branch coverage **100%**；3 条仍为 aiohttp/CPython 依赖层 `DeprecationWarning`。
+- 静态与构建：ruff 检查、36 文件格式检查通过；wheel/sdist 构建通过，wheel 已核对包含
+  `ccxt_cm/exchanges/bifu.py`。
+- 安全保护：测试环境全部完成前，任何非空生产 URL 都直接拒绝。
+- 测试环境：公开 `/market/v1/meta` 探活返回 HTTP 200；响应包含 `assets`、`spots`、`globals`，
+  当时为 69 个资产、24 个现货标的。命令：
+  `curl --max-time 30 https://flame-api.bifu.dev/market/v1/meta`。本次没有使用 Key，没有发出
+  交易请求。
+- 协议资料：公开文档未标版本号；私有接口为 API Key + 毫秒时间戳 + HMAC-SHA256 签名；具体
+  请求频率限制待资料。本阶段不实现鉴权。
+- 能力边界：本阶段所有 Bifu 业务 `has` 仍为 `False`；探活成功不表示 `fetch_markets` 已实现。
+- Jacky 手动验收：2026-09-18 已完成。Jacky 亲自运行测试/生产两个离线检查命令，结果分别为
+  `sandbox=true, configured=true` 和 `sandbox=false, configured=false`；能说明测试与生产资金及
+  账户不能混用、测试开关要在创建交易所实例后且调用任何接口前打开，以及生产地址不配置可防止
+  误连真实账户。
