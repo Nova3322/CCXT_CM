@@ -152,4 +152,5 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [来源与依赖](docs/sources.md)、[变更记录](CHANGELOG.md)、[贡献说明](CONTRIBUTING.md)。
 
 - [第 0 课：先看懂 CCXT](docs/learning/00-ccxt-core.md)：零基础理解统一接口，并完成第一次只读实验。
+- [第 1 课：Bifu 测试与生产环境](docs/learning/01-bifu-environment.md)：创建实例并防止环境、地址和凭据混用。
 - [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。
