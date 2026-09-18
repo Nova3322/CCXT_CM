@@ -27,7 +27,7 @@ async def test_bifu_is_an_explicit_async_extension(exchanges):
     assert registry.exchange_class("bifu", mode="async") is BifuREST
     assert type(test_exchange) is BifuREST
     assert test_exchange.id == "bifu"
-    assert test_exchange.has["fetchMarkets"] is False
+    assert test_exchange.has["fetchMarkets"] is True
 
 
 async def test_test_environment_requires_the_standard_ccxt_switch(exchanges):

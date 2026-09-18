@@ -33,7 +33,8 @@ exchange.set_sandbox_mode(True)
 - REST：`https://flame-api.bifu.dev`
 - WebSocket：`wss://flame-api.bifu.dev`
 
-本阶段尚未开放任何 Bifu 业务能力，所以 `fetchMarkets` 等 `has` 值仍为 `False`。
+环境隔离验收完成后，市场加载能力已在第 2 课开放，所以当前 `fetchMarkets=True`；余额、行情和
+订单等尚未实现的能力仍保持 `False`。参见 `docs/learning/02-bifu-load-markets.md`。
 
 ## 3. 生产环境为什么暂时不能连接
 

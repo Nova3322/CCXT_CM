@@ -19,7 +19,7 @@
 |---|---|---|---|---|---|---|
 | 0 | 官方 CCXT 对照实验 | 基础学习 | 对象检查通过；全量 69 项通过 | 未通过：Binance 连接被拒，OKX 超时 | 未开始 | 2026-09-17 18:43 CST；见 `docs/learning/00-ccxt-core.md` |
 | 1 | 创建 Bifu 实例 / 环境隔离 | 基础设施 | 9 项通过 | 公共主机探活通过；业务接口未开始 | Jacky 已验收（2026-09-18） | 生产配置禁用；测试、生产 URL 和实例不得混用 |
-| 2 | `load_markets` / markets | 普通接口 | 未开始 | 未开始 | 未开始 | 交易对、精度、限额 |
+| 2 | `load_markets` / markets | 普通接口 | 13 项通过 | 程序在线通过 | Jacky 已验收（2026-09-18） | 24 个现货市场；交易对、精度、限额已标准化 |
 | 3 | ticker / order book | 普通接口 | 未开始 | 未开始 | 未开始 | 行情与盘口方向 |
 | 4 | `fetch_trades` / OHLCV | 普通接口 | 未开始 | 未开始 | 未开始 | 公共成交记录，不是创建订单 |
 | 5 | `fetch_balance` | 普通接口 | 未开始 | 未开始 | 未开始 | free / used / total |
@@ -93,3 +93,33 @@ Jacky 手动命令与结果：
   `sandbox=true, configured=true` 和 `sandbox=false, configured=false`；能说明测试与生产资金及
   账户不能混用、测试开关要在创建交易所实例后且调用任何接口前打开，以及生产地址不配置可防止
   误连真实账户。
+
+### 2026-09-18：阶段 2 `load_markets` / markets
+
+- 代码版本：以本记录所在 commit 为准；基于远端
+  `Jacky@b7ffa9b0c253a31c84dd706e7db4cc8395427334` 开发并完成 Jacky 人工验收。Python
+  3.14.7、CCXT 4.5.78、uv 0.12.15。
+- 功能：调用测试环境公开 `/market/v1/meta`，将 Bifu 现货标的转换为 CCXT 标准市场结构；开启
+  `fetchMarkets`、`publicAPI` 和 `spot` 能力声明。
+- 自动化：`pytest -q tests/test_bifu_markets.py`，**13 passed**。覆盖正常标准化、固定查询编码、
+  未支持参数、生产关闭、暂停/未知状态、畸形元数据，以及只读验收工具首次超时后重试一次；
+  网络测试只连接本机回环服务。
+- 全库复测：2026-09-18 13:57 CST，`pytest -q --cov=ccxt_cm --cov-report=term-missing`，
+  **91 passed**，核心包 statement/branch coverage **100%**；12 条仍为 aiohttp/CPython 依赖层
+  `DeprecationWarning`。
+- 静态与发布物：`ruff check .`、39 文件格式检查通过；wheel/sdist 构建通过，wheel 内的
+  `ccxt_cm/exchanges/bifu.py` 与工作区一致。
+- 测试环境：公开只读在线验收通过，共返回 **24** 个现货市场；`BTC-USDT` 转为 `BTC/USDT`，
+  `market.id` 使用原始 `instrument_id=90000001`；数量步长 `0.00001`、价格步长 `0.01`、最小
+  数量 `0.00001`、最小名义金额 `5 USDT`。
+- 精度示例：数量 `1.23456789` 转为 `1.23456`，价格 `100.129` 转为 `100.13`。
+- 稳定性：人工验收时曾出现 `GET /market/v1/meta` 超时；同一链路随后直接请求及程序复测均成功，
+  判断为测试环境或 Cloudflare 链路的短暂波动。只读人工验收工具使用 30 秒超时，首次超时会明确
+  提示并只重试一次；适配器本身仍尊重调用方传入的 CCXT `timeout`，不会自动重试，避免未来写
+  接口出现重复下单。
+- 安全边界：不读取 Key、不访问账户、不下单；生产 URL 仍关闭，其他业务 `has` 仍为 `False`；
+  原始 `margin` 对象不足以证明保证金交易可用，市场 `margin` 保守保持 `False`。
+- Jacky 手动验收：2026-09-18 14:06 CST 已完成。Jacky 亲自运行只读命令，得到测试环境、24 个
+  现货市场及 `BTC/USDT` 的标准化结果；能说明 `BTC-USDT` 是 Bifu 原生格式、`BTC/USDT` 是
+  CCXT 统一格式且二者不能在程序中混用，订单名义金额低于 `5 USDT` 不能下单，并确认 markets
+  验收不代表余额或下单功能已经完成。
