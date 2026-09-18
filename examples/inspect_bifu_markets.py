@@ -3,29 +3,22 @@
 import argparse
 import asyncio
 import json
-import sys
 
-from ccxt import RequestTimeout
-
-from ccxt_cm.exchanges.bifu import BifuREST
+from ccxt_cm import create_exchange
+from examples._bifu_readonly import retry_readonly_once
 
 
 async def inspect_market(symbol="BTC/USDT", *, exchange=None, retry_delay=1.0):
     owns_exchange = exchange is None
     if owns_exchange:
-        exchange = BifuREST({"timeout": 30000})
+        exchange = create_exchange("bifu", {"timeout": 30000}, mode="async")
         exchange.set_sandbox_mode(True)
     try:
-        try:
-            markets = await exchange.load_markets()
-        except RequestTimeout:
-            print(
-                "Bifu 测试环境首次请求超时，正在进行第 2 次只读重试...",
-                file=sys.stderr,
-            )
-            if retry_delay:
-                await asyncio.sleep(retry_delay)
-            markets = await exchange.load_markets(True)
+        markets = await retry_readonly_once(
+            exchange.load_markets,
+            lambda: exchange.load_markets(True),
+            retry_delay=retry_delay,
+        )
         market = exchange.market(symbol)
         return {
             "environment": "test",

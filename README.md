@@ -154,4 +154,6 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [第 0 课：先看懂 CCXT](docs/learning/00-ccxt-core.md)：零基础理解统一接口，并完成第一次只读实验。
 - [第 1 课：Bifu 测试与生产环境](docs/learning/01-bifu-environment.md)：创建实例并防止环境、地址和凭据混用。
 - [第 2 课：Bifu `load_markets`](docs/learning/02-bifu-load-markets.md)：理解交易对、精度和限额并完成只读验收。
+- [第 3 课：Bifu `fetch_ticker`](docs/learning/03-bifu-fetch-ticker.md)：理解 24 小时行情、成交量和盘口边界。
+- [第 4 课：Bifu 私有订单查询](docs/learning/04-bifu-private-orders.md)：区分当前挂单、历史订单、单笔订单和自己的成交记录。
 - [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。

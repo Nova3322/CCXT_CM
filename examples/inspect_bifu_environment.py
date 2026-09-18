@@ -5,16 +5,13 @@ import asyncio
 import json
 from typing import Literal
 
-from ccxt_cm import Registry
-from ccxt_cm.exchanges.bifu import BIFU_EXTENSION
+from ccxt_cm import create_exchange
 
 Environment = Literal["test", "production"]
 
 
 async def inspect_environment(environment: Environment) -> dict:
-    registry = Registry()
-    registry.register(BIFU_EXTENSION)
-    exchange = registry.create_exchange("bifu", mode="async")
+    exchange = create_exchange("bifu", mode="async")
     try:
         if environment == "test":
             exchange.set_sandbox_mode(True)
