@@ -6,7 +6,12 @@ import json
 import uuid
 
 from ccxt_cm import create_exchange
-from examples._bifu_write import credentials_from_environment, load_markets_with_retry
+from examples._bifu_write import (
+    cleanup_owned_orders,
+    credentials_from_environment,
+    load_markets_with_retry,
+    wait_until_orders_absent,
+)
 
 _CONFIRMATION = "BIFU_TEST_BATCH_WRITE"
 
@@ -17,18 +22,6 @@ async def _wait_for_owned_orders(exchange, symbol, owned_ids, poll_attempts, pol
         open_orders = await exchange.fetch_open_orders(symbol)
         open_ids = {order["id"] for order in open_orders}
         if owned_ids.issubset(open_ids):
-            return open_orders
-        if attempt < poll_attempts - 1 and poll_delay:
-            await asyncio.sleep(poll_delay)
-    return open_orders
-
-
-async def _wait_until_absent(exchange, symbol, owned_ids, poll_attempts, poll_delay):
-    open_orders = []
-    for attempt in range(poll_attempts):
-        open_orders = await exchange.fetch_open_orders(symbol)
-        open_ids = {order["id"] for order in open_orders}
-        if owned_ids.isdisjoint(open_ids):
             return open_orders
         if attempt < poll_attempts - 1 and poll_delay:
             await asyncio.sleep(poll_delay)
@@ -103,7 +96,7 @@ async def accept_batch_orders(
         if len(acknowledgements) != 2 or acknowledged_ids != owned_ids:
             raise RuntimeError("batch cancel ACKs did not match the created orders")
 
-        after_cancel = await _wait_until_absent(
+        after_cancel = await wait_until_orders_absent(
             exchange, symbol, owned_ids, poll_attempts, poll_delay
         )
         after_ids = {order["id"] for order in after_cancel}
@@ -130,34 +123,13 @@ async def accept_batch_orders(
     finally:
         try:
             if write_started and not batch_cancel_verified:
-                try:
-                    open_orders = await exchange.fetch_open_orders(symbol)
-                except Exception as error:
-                    raise RuntimeError(
-                        "could not inspect test orders during failed batch acceptance cleanup"
-                    ) from error
-                cleanup_orders = [
-                    order
-                    for order in open_orders
-                    if order.get("id") in owned_ids or order.get("clientOrderId") in client_ids
-                ]
-                for order in cleanup_orders:
-                    try:
-                        await exchange.cancel_order(order["id"], symbol)
-                    except Exception:
-                        continue
-                try:
-                    remaining = await exchange.fetch_open_orders(symbol)
-                except Exception as error:
-                    raise RuntimeError(
-                        "could not verify test-order cleanup after failed batch acceptance"
-                    ) from error
-                owned_remain = any(
-                    order.get("id") in owned_ids or order.get("clientOrderId") in client_ids
-                    for order in remaining
+                await cleanup_owned_orders(
+                    exchange,
+                    symbol,
+                    owned_ids,
+                    client_ids,
+                    label="batch acceptance",
                 )
-                if owned_remain:
-                    raise RuntimeError("a test order may remain open after failed batch acceptance")
         finally:
             if owns_exchange:
                 await exchange.close()

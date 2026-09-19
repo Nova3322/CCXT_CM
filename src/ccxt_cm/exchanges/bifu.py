@@ -42,7 +42,11 @@ class BifuREST(AsyncExchange):
     private_get_spot_v1_open_orders = Entry("spot/v1/openOrders", "private", "GET", {"cost": 1})
     private_get_spot_v1_order_query = Entry("spot/v1/order/query", "private", "GET", {"cost": 1})
     private_post_spot_v1_order = Entry("spot/v1/order", "private", "POST", {"cost": 1})
+    private_post_spot_v1_order_amend = Entry("spot/v1/order/amend", "private", "POST", {"cost": 1})
     private_post_spot_v1_orders = Entry("spot/v1/orders", "private", "POST", {"cost": 1})
+    private_post_spot_v1_orders_amend = Entry(
+        "spot/v1/orders/amend", "private", "POST", {"cost": 1}
+    )
     private_post_spot_v1_order_cancel = Entry(
         "spot/v1/order/cancel", "private", "POST", {"cost": 1}
     )
@@ -77,6 +81,8 @@ class BifuREST(AsyncExchange):
                     "createMarketOrderWithCost": False,
                     "createMarketSellOrder": True,
                     "createMarketSellOrderWithCost": False,
+                    "editOrder": True,
+                    "editOrders": True,
                     "fetchBalance": True,
                     "fetchClosedOrders": True,
                     "fetchMarkets": True,
@@ -401,6 +407,190 @@ class BifuREST(AsyncExchange):
         order["info"] = response
         return order
 
+    async def edit_order(
+        self,
+        id,
+        symbol,
+        type,
+        side,
+        amount=None,
+        price=None,
+        params=None,
+    ):
+        request, market = await self._edit_order_request(
+            id, symbol, type, side, amount, price, params
+        )
+        response = await self.private_post_spot_v1_order_amend(request)
+        if not isinstance(response, dict):
+            raise BadResponse("bifu edit order response must be a JSON object")
+        if self.safe_string(response, "order_id") != id:
+            raise BadResponse("bifu edit order response order_id does not match request")
+        return self._parse_edit_ack(response, request, market, type, side, True)
+
+    async def edit_orders(self, orders, params=None):
+        params = dict(params or {})
+        self._check_supported_params("edit_orders", params, set())
+        if not isinstance(orders, list) or not 1 <= len(orders) <= 100:
+            raise ArgumentsRequired("bifu edit_orders requires between 1 and 100 orders")
+        symbols = []
+        for order in orders:
+            if not isinstance(order, dict):
+                raise InvalidOrder("bifu edit_orders entries must be objects")
+            symbol = self.safe_string(order, "symbol")
+            if symbol is None:
+                raise ArgumentsRequired("bifu edit_orders requires a symbol for each order")
+            symbols.append(symbol)
+        if len(set(symbols)) != 1:
+            raise NotSupported("bifu edit_orders supports one symbol per batch")
+
+        entries = []
+        contexts = []
+        market = None
+        for order in orders:
+            order_params = order.get("params", {})
+            if not isinstance(order_params, dict):
+                raise InvalidOrder("bifu edit_orders params must be an object")
+            request, order_market = await self._edit_order_request(
+                self.safe_string(order, "id"),
+                self.safe_string(order, "symbol"),
+                self.safe_string(order, "type"),
+                self.safe_string(order, "side"),
+                self.safe_value(order, "amount"),
+                self.safe_value(order, "price"),
+                order_params,
+            )
+            market = order_market
+            entries.append(self.omit(request, "instrument_id"))
+            contexts.append(
+                (request, self.safe_string(order, "type"), self.safe_string(order, "side"))
+            )
+
+        response = await self.private_post_spot_v1_orders_amend(
+            {"instrument_id": self.safe_integer(market, "id"), "entries": entries}
+        )
+        if not isinstance(response, dict):
+            raise BadResponse("bifu edit orders response must be a JSON object")
+        acknowledgements = self.safe_list(response, "acks")
+        if acknowledgements is None or len(acknowledgements) != len(contexts):
+            raise BadResponse("bifu edit orders ACK count does not match request count")
+        result = []
+        for index, acknowledgement in enumerate(acknowledgements):
+            if not isinstance(acknowledgement, dict):
+                raise BadResponse("bifu edit orders response has an invalid ACK entry")
+            request, order_type, order_side = contexts[index]
+            if self.safe_string(acknowledgement, "order_id") != request["order_id"]:
+                raise BadResponse("bifu edit orders ACK order_id does not match request")
+            accepted = self.safe_bool(acknowledgement, "accepted")
+            if accepted is False and not self.safe_string(acknowledgement, "reject_code"):
+                raise BadResponse("bifu rejected edit orders ACK is missing reject_code")
+            result.append(
+                self._parse_edit_ack(
+                    acknowledgement,
+                    request,
+                    market,
+                    order_type,
+                    order_side,
+                    accepted is True,
+                )
+            )
+        return result
+
+    async def _edit_order_request(
+        self,
+        id,
+        symbol,
+        type,
+        side,
+        amount,
+        price,
+        params,
+    ):
+        params = dict(params or {})
+        trigger_fields = {
+            "upper_trigger_price",
+            "lower_trigger_price",
+            "upper_order_price",
+            "lower_order_price",
+        }
+        self._check_supported_params("edit_order", params, trigger_fields)
+        if not isinstance(id, str) or not id:
+            raise ArgumentsRequired("bifu edit_order requires a non-empty order id")
+        if symbol is None:
+            raise ArgumentsRequired("bifu edit_order requires a symbol")
+        if not isinstance(type, str) or type.lower() not in ("limit", "trigger"):
+            raise NotSupported("bifu edit_order supports limit and trigger orders only")
+        if not isinstance(side, str) or side.lower() not in ("buy", "sell"):
+            raise InvalidOrder("bifu edit_order side must be buy or sell")
+        if amount is None and price is None and not params:
+            raise ArgumentsRequired("bifu edit_order requires an amount or price change")
+
+        await self.load_markets()
+        market = self.market(symbol)
+        instrument_id = self.safe_integer(market, "id")
+        if instrument_id is None:
+            raise BadResponse("bifu market instrument id must be an integer")
+        request = {"instrument_id": instrument_id, "order_id": id}
+        if amount is not None:
+            amount_input = self._positive_decimal_string(amount)
+            if amount_input is None:
+                raise InvalidOrder("bifu edit_order amount must be a positive finite value")
+            quantity = self.amount_to_precision(symbol, amount_input)
+            amount_limits = market["limits"]["amount"]
+            if amount_limits["min"] is not None and Precise.string_lt(
+                quantity, str(amount_limits["min"])
+            ):
+                raise InvalidOrder("bifu edit_order amount is below the market minimum amount")
+            if amount_limits["max"] is not None and Precise.string_gt(
+                quantity, str(amount_limits["max"])
+            ):
+                raise InvalidOrder("bifu edit_order amount is above the market maximum amount")
+            request["qty"] = quantity
+        if price is not None:
+            price_input = self._positive_decimal_string(price)
+            if price_input is None:
+                raise InvalidOrder("bifu edit_order price must be a positive finite value")
+            order_price = self.price_to_precision(symbol, price_input)
+            self._check_edit_limit("price", order_price, market["limits"]["price"])
+            request["price"] = order_price
+        for field in trigger_fields:
+            if field not in params:
+                continue
+            value = self._nonnegative_decimal_string(params[field])
+            if value is None:
+                raise InvalidOrder(f"bifu edit_order {field} must be a non-negative value")
+            request[field] = (
+                "0" if Precise.string_eq(value, "0") else self.price_to_precision(symbol, value)
+            )
+            if request[field] != "0":
+                self._check_edit_limit(field, request[field], market["limits"]["price"])
+
+        if "qty" in request and "price" in request:
+            cost = Precise.string_mul(request["qty"], request["price"])
+            self._check_edit_limit("cost", cost, market["limits"]["cost"])
+
+        return request, market
+
+    def _check_edit_limit(self, label, value, limits):
+        if limits["min"] is not None and Precise.string_lt(value, str(limits["min"])):
+            raise InvalidOrder(f"bifu edit_order {label} is below the market minimum {label}")
+        if limits["max"] is not None and Precise.string_gt(value, str(limits["max"])):
+            raise InvalidOrder(f"bifu edit_order {label} is above the market maximum {label}")
+
+    def _parse_edit_ack(self, response, request, market, type, side, include_request_values):
+        order = self.parse_order(
+            {
+                "order_id": request["order_id"],
+                "instrument_id": market["id"],
+                "side": side.upper(),
+                "type": type.upper(),
+                "price": self.safe_string(request, "price") if include_request_values else None,
+                "orig_qty": self.safe_string(request, "qty") if include_request_values else None,
+            },
+            market,
+        )
+        order["info"] = response
+        return order
+
     async def cancel_order(self, id, symbol=None, params=None):
         params = dict(params or {})
         self._check_supported_params("cancel_order", params, set())
@@ -661,6 +851,14 @@ class BifuREST(AsyncExchange):
         try:
             text = str(value)
             return text if Precise.string_gt(text, "0") else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _nonnegative_decimal_string(value):
+        try:
+            text = str(value)
+            return text if Precise.string_ge(text, "0") else None
         except (TypeError, ValueError, OverflowError):
             return None
 

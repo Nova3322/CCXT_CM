@@ -160,4 +160,5 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [第 6 课：Bifu 市价买单和市价卖单](docs/learning/06-bifu-market-order.md)：理解买入预算、卖出数量、IOC 和真实成交验收。
 - [第 7 课：Bifu 撤销一个交易对的全部挂单](docs/learning/07-bifu-cancel-all-orders.md)：理解影响范围、受理计数和安全验收边界。
 - [第 8 课：Bifu 批量下单与批量撤单](docs/learning/08-bifu-batch-orders.md)：理解同序逐笔回执、部分拒绝、批量受理与最终状态复查。
+- [第 9 课：Bifu 单笔改单与批量改单](docs/learning/09-bifu-amend-orders.md)：理解原生改单、总数量、逐项受理、最终状态复查和超时安全边界。
 - [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。
