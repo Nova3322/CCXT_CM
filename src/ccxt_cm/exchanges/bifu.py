@@ -60,6 +60,13 @@ class BifuREST(AsyncExchange):
                     "spot": True,
                     "cancelOrder": True,
                     "createOrder": True,
+                    "createLimitOrder": True,
+                    "createMarketBuyOrder": False,
+                    "createMarketBuyOrderWithCost": True,
+                    "createMarketOrder": False,
+                    "createMarketOrderWithCost": False,
+                    "createMarketSellOrder": True,
+                    "createMarketSellOrderWithCost": False,
                     "fetchBalance": True,
                     "fetchClosedOrders": True,
                     "fetchMarkets": True,
@@ -101,6 +108,7 @@ class BifuREST(AsyncExchange):
                         "1M",
                     )
                 },
+                "options": {"createMarketBuyOrderRequiresPrice": True},
             },
         )
 
@@ -194,7 +202,7 @@ class BifuREST(AsyncExchange):
     async def create_order(self, symbol, type, side, amount, price=None, params=None):
         params = dict(params or {})
         self._check_supported_params(
-            "create_order", params, {"clientOrderId", "postOnly", "timeInForce"}
+            "create_order", params, {"clientOrderId", "cost", "postOnly", "timeInForce"}
         )
         if not isinstance(type, str):
             raise InvalidOrder("bifu order type must be a string")
@@ -202,15 +210,25 @@ class BifuREST(AsyncExchange):
             raise InvalidOrder("bifu order side must be a string")
         order_type = type.lower()
         order_side = side.lower()
-        if order_type != "limit":
-            raise NotSupported("bifu create_order currently supports limit orders only")
+        if order_type not in ("limit", "market"):
+            raise NotSupported("bifu create_order supports limit and market orders only")
         if order_side not in ("buy", "sell"):
-            raise InvalidOrder("bifu limit order side must be buy or sell")
-        if price is None:
+            raise InvalidOrder("bifu order side must be buy or sell")
+        cost_value = params.get("cost")
+        cost_input = self._positive_decimal_string(cost_value) if cost_value is not None else None
+        if cost_value is not None and cost_input is None:
+            raise InvalidOrder("bifu order cost must be a positive finite value")
+        if cost_value is not None and not (order_type == "market" and order_side == "buy"):
+            raise InvalidOrder("bifu cost is only supported for market buy orders")
+        if order_type == "limit" and price is None:
             raise InvalidOrder("bifu limit orders require a price")
+        if order_type == "market" and order_side == "buy" and price is None and cost_input is None:
+            raise InvalidOrder(
+                "bifu market buy orders require a price or cost to calculate the quote budget"
+            )
         amount_input = self._positive_decimal_string(amount)
-        price_input = self._positive_decimal_string(price)
-        if amount_input is None or price_input is None:
+        price_input = self._positive_decimal_string(price) if price is not None else None
+        if amount_input is None or (price is not None and price_input is None):
             raise InvalidOrder("bifu order amount and price must be positive finite values")
 
         await self.load_markets()
@@ -219,45 +237,63 @@ class BifuREST(AsyncExchange):
         if instrument_id is None:
             raise BadResponse("bifu market instrument id must be an integer")
         quantity = self.amount_to_precision(symbol, amount_input)
-        order_price = self.price_to_precision(symbol, price_input)
+        order_price = self.price_to_precision(symbol, price_input) if price_input else None
         amount_limits = market["limits"]["amount"]
         cost_limits = market["limits"]["cost"]
-        if amount_limits["min"] is not None and Precise.string_lt(
-            quantity, str(amount_limits["min"])
-        ):
-            raise InvalidOrder("bifu order amount is below the market minimum amount")
-        if amount_limits["max"] is not None and Precise.string_gt(
-            quantity, str(amount_limits["max"])
-        ):
-            raise InvalidOrder("bifu order amount is above the market maximum amount")
-        cost = Precise.string_mul(quantity, order_price)
-        if cost_limits["min"] is not None and Precise.string_lt(cost, str(cost_limits["min"])):
-            raise InvalidOrder("bifu order value is below the market minimum cost")
-        if cost_limits["max"] is not None and Precise.string_gt(cost, str(cost_limits["max"])):
-            raise InvalidOrder("bifu order value is above the market maximum cost")
+        if not (order_type == "market" and order_side == "buy"):
+            if amount_limits["min"] is not None and Precise.string_lt(
+                quantity, str(amount_limits["min"])
+            ):
+                raise InvalidOrder("bifu order amount is below the market minimum amount")
+            if amount_limits["max"] is not None and Precise.string_gt(
+                quantity, str(amount_limits["max"])
+            ):
+                raise InvalidOrder("bifu order amount is above the market maximum amount")
+        quote_quantity = None
+        if order_type == "limit":
+            cost = Precise.string_mul(quantity, order_price)
+        elif order_side == "buy":
+            cost = cost_input or Precise.string_mul(amount_input, price_input)
+            quote_quantity = self.cost_to_precision(symbol, cost)
+            cost = quote_quantity
+        else:
+            cost = None
+        if cost is not None:
+            if cost_limits["min"] is not None and Precise.string_lt(cost, str(cost_limits["min"])):
+                raise InvalidOrder("bifu order value is below the market minimum cost")
+            if cost_limits["max"] is not None and Precise.string_gt(cost, str(cost_limits["max"])):
+                raise InvalidOrder("bifu order value is above the market maximum cost")
         client_order_id = self.safe_string(params, "clientOrderId") or self.uuid16()
-        time_in_force_value = params.get("timeInForce", "GTC")
+        time_in_force_value = params.get("timeInForce", "IOC" if order_type == "market" else "GTC")
         if not isinstance(time_in_force_value, str):
             raise InvalidOrder("bifu timeInForce must be a string")
         time_in_force = time_in_force_value.upper()
         if time_in_force == "PO":
             time_in_force = "POST_ONLY"
         post_only = self.safe_bool(params, "postOnly", False)
+        if order_type == "market" and (post_only or time_in_force == "POST_ONLY"):
+            raise InvalidOrder("bifu market orders do not support postOnly")
         if post_only:
             if time_in_force not in ("GTC", "POST_ONLY"):
                 raise InvalidOrder("bifu postOnly conflicts with timeInForce")
             time_in_force = "POST_ONLY"
-        if time_in_force not in ("GTC", "IOC", "FOK", "POST_ONLY"):
+        if order_type == "market" and time_in_force != "IOC":
+            raise InvalidOrder("bifu market order timeInForce must be IOC")
+        if order_type == "limit" and time_in_force not in ("GTC", "IOC", "FOK", "POST_ONLY"):
             raise InvalidOrder("bifu limit order timeInForce must be GTC, IOC, FOK, or PO")
         request = {
             "instrument_id": instrument_id,
             "side": order_side.upper(),
-            "type": "LIMIT",
+            "type": order_type.upper(),
             "client_order_id": client_order_id,
             "time_in_force": time_in_force,
-            "price": order_price,
-            "qty": quantity,
         }
+        if order_type == "market" and order_side == "buy":
+            request["quote_qty"] = quote_quantity
+        else:
+            request["qty"] = quantity
+        if order_type == "limit":
+            request["price"] = order_price
         response = await self.private_post_spot_v1_order(request)
         if not isinstance(response, dict):
             raise BadResponse("bifu create order response must be a JSON object")
@@ -272,8 +308,9 @@ class BifuREST(AsyncExchange):
                 "side": request["side"],
                 "type": request["type"],
                 "time_in_force": request["time_in_force"],
-                "price": order_price,
-                "orig_qty": quantity,
+                "price": order_price if order_type == "limit" else None,
+                "orig_qty": "0" if quote_quantity is not None else quantity,
+                "quote_qty": quote_quantity,
             },
             market,
         )
