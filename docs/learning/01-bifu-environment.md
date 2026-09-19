@@ -70,10 +70,13 @@ exchange = create_exchange(
 - `fetch_ohlcv()`
 - `fetch_trades()`
 - `fetch_balance()`
+- `fetch_open_orders()` / `fetch_closed_orders()` / `fetch_order()` / `fetch_my_trades()`
+- `create_order()` / `cancel_order()` / `cancel_all_orders()`
+- `create_orders()` / `cancel_orders()`
 
-私有请求已实现 `X-API-KEY`、毫秒 `X-TS` 和 HMAC-SHA256 小写 hex `X-SIGN`。其余订单、批量、
-资金流水和 Bifu 专有 `mock` 方法仍属于第一部分进行中的工作；尚未实现的方法不会提前声明为
-`has=True`。
+私有请求已实现 `X-API-KEY`、毫秒 `X-TS` 和 HMAC-SHA256 小写 hex `X-SIGN`。批量下单和批量
+撤单已经完成自动化与测试环境在线验收；其余 REST、完整异常矩阵和 Bifu 专有 `mock` 方法仍属于
+第一部分进行中的工作；尚未实现的方法不会提前声明为 `has=True`。
 
 ## 5. 手动检查环境
 

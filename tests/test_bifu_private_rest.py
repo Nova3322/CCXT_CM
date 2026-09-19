@@ -56,7 +56,24 @@ async def bifu_private_server(unused_tcp_port):
     state = SimpleNamespace(
         calls=[],
         cancel_all_orders_response={"canceled": 2},
+        cancel_orders_response={"accepted": True, "count": 2},
         cancel_order_response={"accepted": True},
+        create_orders_response={
+            "acks": [
+                {
+                    "order_id": "batch-order-1",
+                    "client_order_id": "fixture-batch-1",
+                    "status": "PENDING",
+                    "reject_code": "",
+                },
+                {
+                    "order_id": "batch-order-2",
+                    "client_order_id": "fixture-batch-2",
+                    "status": "PENDING",
+                    "reject_code": "",
+                },
+            ]
+        },
         create_order_response={"order_id": "created-order-456"},
         delays={},
         request_bodies=[],
@@ -121,8 +138,12 @@ async def bifu_private_server(unused_tcp_port):
             )
         if request.path == "/spot/v1/order" and request.method == "POST":
             return web.json_response(state.create_order_response)
+        if request.path == "/spot/v1/orders" and request.method == "POST":
+            return web.json_response(state.create_orders_response)
         if request.path == "/spot/v1/order/cancel" and request.method == "POST":
             return web.json_response(state.cancel_order_response)
+        if request.path == "/spot/v1/orders/cancel" and request.method == "POST":
+            return web.json_response(state.cancel_orders_response)
         if request.path == "/spot/v1/openOrders/cancel" and request.method == "POST":
             return web.json_response(state.cancel_all_orders_response)
         if request.path == "/spot/v1/order/query":
@@ -285,6 +306,385 @@ async def test_create_limit_order_sends_bifu_request_and_returns_ccxt_ack(
         '"price":"100.13","qty":"0.12345","side":"BUY",'
         '"time_in_force":"GTC","type":"LIMIT"}',
     )
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_orders_sends_one_bifu_batch_and_preserves_ack_order(
+    bifu_private_server,
+):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        orders = await exchange.create_orders(
+            [
+                {
+                    "symbol": "BTC/USDT",
+                    "type": "limit",
+                    "side": "buy",
+                    "amount": 0.123456,
+                    "price": 100.129,
+                    "params": {
+                        "clientOrderId": "fixture-batch-1",
+                        "postOnly": True,
+                    },
+                },
+                {
+                    "symbol": "BTC/USDT",
+                    "type": "limit",
+                    "side": "sell",
+                    "amount": 0.2,
+                    "price": 101,
+                    "params": {"clientOrderId": "fixture-batch-2"},
+                },
+            ]
+        )
+    finally:
+        await exchange.close()
+
+    assert [order["id"] for order in orders] == ["batch-order-1", "batch-order-2"]
+    assert [order["clientOrderId"] for order in orders] == [
+        "fixture-batch-1",
+        "fixture-batch-2",
+    ]
+    assert [order["side"] for order in orders] == ["buy", "sell"]
+    assert [order["status"] for order in orders] == ["open", "open"]
+    assert exchange.has["createOrders"] is True
+    assert bifu_private_server.calls == [
+        ("GET", "/market/v1/meta", {}, None),
+        ("POST", "/spot/v1/orders", {}, True),
+    ]
+    assert bifu_private_server.request_bodies[-1] == (
+        "POST",
+        "/spot/v1/orders",
+        '{"entries":[{"client_order_id":"fixture-batch-1","price":"100.13",'
+        '"qty":"0.12345","side":"BUY","time_in_force":"POST_ONLY",'
+        '"type":"LIMIT"},{"client_order_id":"fixture-batch-2","price":"101",'
+        '"qty":"0.2","side":"SELL","time_in_force":"GTC","type":"LIMIT"}],'
+        '"instrument_id":90000001}',
+    )
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_orders_preserves_per_item_rejection(bifu_private_server):
+    bifu_private_server.create_orders_response = {
+        "acks": [
+            {
+                "order_id": "batch-order-1",
+                "client_order_id": "fixture-batch-ok",
+                "status": "PENDING",
+                "reject_code": "",
+            },
+            {
+                "order_id": "",
+                "client_order_id": "fixture-batch-rejected",
+                "status": "REJECTED",
+                "reject_code": "MIN_NOTIONAL",
+            },
+        ]
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        orders = await exchange.create_orders(
+            [
+                {
+                    "symbol": "BTC/USDT",
+                    "type": "limit",
+                    "side": "buy",
+                    "amount": 0.1,
+                    "price": 100,
+                    "params": {"clientOrderId": "fixture-batch-ok"},
+                },
+                {
+                    "symbol": "BTC/USDT",
+                    "type": "limit",
+                    "side": "buy",
+                    "amount": 0.1,
+                    "price": 100,
+                    "params": {"clientOrderId": "fixture-batch-rejected"},
+                },
+            ]
+        )
+    finally:
+        await exchange.close()
+
+    assert orders[0]["status"] == "open"
+    assert orders[1]["id"] is None
+    assert orders[1]["status"] == "rejected"
+    assert orders[1]["info"]["reject_code"] == "MIN_NOTIONAL"
+
+
+@pytest.mark.parametrize("orders", [[], [{}] * 101])
+async def test_create_orders_rejects_invalid_batch_size_before_network(orders):
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(ArgumentsRequired, match="between 1 and 100"):
+            await exchange.create_orders(orders)
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_orders_rejects_ack_count_mismatch(bifu_private_server):
+    bifu_private_server.create_orders_response = {"acks": []}
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(BadResponse, match="ACK count"):
+            await exchange.create_orders(
+                [
+                    {
+                        "symbol": "BTC/USDT",
+                        "type": "limit",
+                        "side": "buy",
+                        "amount": 0.1,
+                        "price": 100,
+                    }
+                ]
+            )
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+@pytest.mark.parametrize(
+    ("ack", "message"),
+    [
+        (
+            {
+                "order_id": "batch-order-1",
+                "client_order_id": "wrong-client-id",
+                "status": "PENDING",
+                "reject_code": "",
+            },
+            "client_order_id",
+        ),
+        (
+            {
+                "order_id": "batch-order-1",
+                "client_order_id": "fixture-invalid-ack",
+                "reject_code": "",
+            },
+            "missing status",
+        ),
+        (
+            {
+                "order_id": "",
+                "client_order_id": "fixture-invalid-ack",
+                "status": "REJECTED",
+                "reject_code": "",
+            },
+            "missing reject_code",
+        ),
+        (
+            {
+                "order_id": "",
+                "client_order_id": "fixture-invalid-ack",
+                "status": "PENDING",
+                "reject_code": "",
+            },
+            "missing order_id",
+        ),
+    ],
+)
+async def test_create_orders_rejects_invalid_ack_entry(bifu_private_server, ack, message):
+    bifu_private_server.create_orders_response = {"acks": [ack]}
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(BadResponse, match=message):
+            await exchange.create_orders(
+                [
+                    {
+                        "symbol": "BTC/USDT",
+                        "type": "limit",
+                        "side": "buy",
+                        "amount": 0.1,
+                        "price": 100,
+                        "params": {"clientOrderId": "fixture-invalid-ack"},
+                    }
+                ]
+            )
+    finally:
+        await exchange.close()
+
+
+async def test_create_orders_rejects_mixed_symbols_before_network():
+    exchange = create_exchange("bifu", mode="async")
+    orders = [
+        {"symbol": "BTC/USDT", "type": "limit", "side": "buy", "amount": 1, "price": 5},
+        {"symbol": "ETH/USDT", "type": "limit", "side": "buy", "amount": 1, "price": 5},
+    ]
+    try:
+        with pytest.raises(NotSupported, match="one symbol"):
+            await exchange.create_orders(orders)
+    finally:
+        await exchange.close()
+
+
+async def test_create_orders_rejects_non_object_item_params_before_network():
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(InvalidOrder, match="params must be an object"):
+            await exchange.create_orders(
+                [
+                    {
+                        "symbol": "BTC/USDT",
+                        "type": "limit",
+                        "side": "buy",
+                        "amount": 1,
+                        "price": 5,
+                        "params": ["postOnly"],
+                    }
+                ]
+            )
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_orders_preserves_unknown_ack_status(bifu_private_server):
+    bifu_private_server.create_orders_response = {
+        "acks": [
+            {
+                "order_id": "",
+                "client_order_id": "fixture-unknown-ack",
+                "status": "AWAITING_RISK_REVIEW",
+                "reject_code": "",
+            }
+        ]
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        orders = await exchange.create_orders(
+            [
+                {
+                    "symbol": "BTC/USDT",
+                    "type": "limit",
+                    "side": "buy",
+                    "amount": 0.1,
+                    "price": 100,
+                    "params": {"clientOrderId": "fixture-unknown-ack"},
+                }
+            ]
+        )
+    finally:
+        await exchange.close()
+
+    assert orders[0]["id"] is None
+    assert orders[0]["status"] is None
+    assert orders[0]["info"]["status"] == "AWAITING_RISK_REVIEW"
+
+
+async def test_create_orders_rejects_unsupported_common_params_before_network():
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(NotSupported, match="does not accept params"):
+            await exchange.create_orders([], {"foo": "bar"})
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_orders_maps_bifu_business_error(bifu_private_server):
+    bifu_private_server.forced_errors["/spot/v1/orders"] = {
+        "code": 4001,
+        "message": "permission denied",
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(PermissionDenied, match="4001"):
+            await exchange.create_orders(
+                [
+                    {
+                        "symbol": "BTC/USDT",
+                        "type": "limit",
+                        "side": "buy",
+                        "amount": 0.1,
+                        "price": 100,
+                    }
+                ]
+            )
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_orders_timeout_sends_exactly_one_post(bifu_private_server):
+    bifu_private_server.delays["/spot/v1/orders"] = 0.1
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        await exchange.load_markets()
+        exchange.timeout = 10
+        with pytest.raises(RequestTimeout):
+            await exchange.create_orders(
+                [
+                    {
+                        "symbol": "BTC/USDT",
+                        "type": "limit",
+                        "side": "buy",
+                        "amount": 0.1,
+                        "price": 100,
+                    }
+                ]
+            )
+    finally:
+        await exchange.close()
+
+    posts = [call for call in bifu_private_server.calls if call[0:2] == ("POST", "/spot/v1/orders")]
+    assert len(posts) == 1
 
 
 @pytest.mark.loopback
@@ -742,6 +1142,144 @@ async def test_cancel_order_sends_bifu_request_and_returns_ccxt_ack(bifu_private
         "/spot/v1/order/cancel",
         '{"instrument_id":90000001,"order_id":"order-123"}',
     )
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_cancel_orders_sends_one_bifu_batch_and_returns_ccxt_ack_list(
+    bifu_private_server,
+):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        orders = await exchange.cancel_orders(["batch-order-1", "batch-order-2"], "BTC/USDT")
+    finally:
+        await exchange.close()
+
+    assert [order["id"] for order in orders] == ["batch-order-1", "batch-order-2"]
+    assert [order["symbol"] for order in orders] == ["BTC/USDT", "BTC/USDT"]
+    assert [order["status"] for order in orders] == [None, None]
+    assert all(order["info"] == {"accepted": True, "count": 2} for order in orders)
+    assert exchange.has["cancelOrders"] is True
+    assert bifu_private_server.calls == [
+        ("GET", "/market/v1/meta", {}, None),
+        ("POST", "/spot/v1/orders/cancel", {}, True),
+    ]
+    assert bifu_private_server.request_bodies[-1] == (
+        "POST",
+        "/spot/v1/orders/cancel",
+        '{"instrument_id":90000001,"order_ids":["batch-order-1","batch-order-2"]}',
+    )
+
+
+@pytest.mark.parametrize(
+    ("ids", "symbol", "message"),
+    [
+        ([], "BTC/USDT", "between 1 and 100"),
+        (["order"] * 101, "BTC/USDT", "between 1 and 100"),
+        (["order"], None, "requires a symbol"),
+    ],
+)
+async def test_cancel_orders_rejects_invalid_scope_before_network(ids, symbol, message):
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(ArgumentsRequired, match=message):
+            await exchange.cancel_orders(ids, symbol)
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"accepted": False, "count": 2},
+        {"accepted": True, "count": 1},
+        {"accepted": True, "count": -1},
+        {},
+    ],
+)
+async def test_cancel_orders_rejects_invalid_batch_ack(bifu_private_server, response):
+    bifu_private_server.cancel_orders_response = response
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(BadResponse, match="cancel orders response"):
+            await exchange.cancel_orders(["batch-order-1", "batch-order-2"], "BTC/USDT")
+    finally:
+        await exchange.close()
+
+
+async def test_cancel_orders_rejects_unsupported_params_before_network():
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(NotSupported, match="does not accept params"):
+            await exchange.cancel_orders(["batch-order-1"], "BTC/USDT", {"foo": "bar"})
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_cancel_orders_maps_bifu_business_error(bifu_private_server):
+    bifu_private_server.forced_errors["/spot/v1/orders/cancel"] = {
+        "code": 4001,
+        "message": "permission denied",
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(PermissionDenied, match="4001"):
+            await exchange.cancel_orders(["batch-order-1"], "BTC/USDT")
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_cancel_orders_timeout_sends_exactly_one_post(bifu_private_server):
+    bifu_private_server.delays["/spot/v1/orders/cancel"] = 0.1
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        await exchange.load_markets()
+        exchange.timeout = 10
+        with pytest.raises(RequestTimeout):
+            await exchange.cancel_orders(["batch-order-1"], "BTC/USDT")
+    finally:
+        await exchange.close()
+
+    posts = [
+        call
+        for call in bifu_private_server.calls
+        if call[0:2] == ("POST", "/spot/v1/orders/cancel")
+    ]
+    assert len(posts) == 1
 
 
 async def test_cancel_order_requires_symbol_before_network():

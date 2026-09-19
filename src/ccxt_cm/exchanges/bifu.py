@@ -42,8 +42,12 @@ class BifuREST(AsyncExchange):
     private_get_spot_v1_open_orders = Entry("spot/v1/openOrders", "private", "GET", {"cost": 1})
     private_get_spot_v1_order_query = Entry("spot/v1/order/query", "private", "GET", {"cost": 1})
     private_post_spot_v1_order = Entry("spot/v1/order", "private", "POST", {"cost": 1})
+    private_post_spot_v1_orders = Entry("spot/v1/orders", "private", "POST", {"cost": 1})
     private_post_spot_v1_order_cancel = Entry(
         "spot/v1/order/cancel", "private", "POST", {"cost": 1}
+    )
+    private_post_spot_v1_orders_cancel = Entry(
+        "spot/v1/orders/cancel", "private", "POST", {"cost": 1}
     )
     private_post_spot_v1_open_orders_cancel = Entry(
         "spot/v1/openOrders/cancel", "private", "POST", {"cost": 1}
@@ -63,7 +67,9 @@ class BifuREST(AsyncExchange):
                     "spot": True,
                     "cancelAllOrders": True,
                     "cancelOrder": True,
+                    "cancelOrders": True,
                     "createOrder": True,
+                    "createOrders": True,
                     "createLimitOrder": True,
                     "createMarketBuyOrder": False,
                     "createMarketBuyOrderWithCost": True,
@@ -204,6 +210,80 @@ class BifuREST(AsyncExchange):
         return self.safe_balance(result)
 
     async def create_order(self, symbol, type, side, amount, price=None, params=None):
+        request, market = await self._create_order_request(
+            symbol, type, side, amount, price, params
+        )
+        response = await self.private_post_spot_v1_order(request)
+        if not isinstance(response, dict):
+            raise BadResponse("bifu create order response must be a JSON object")
+        order_id = self.safe_string(response, "order_id")
+        if not order_id:
+            raise BadResponse("bifu create order response is missing order_id")
+        return self._parse_create_ack(response, request, market)
+
+    async def create_orders(self, orders, params=None):
+        params = dict(params or {})
+        self._check_supported_params("create_orders", params, set())
+        if not isinstance(orders, list) or not 1 <= len(orders) <= 100:
+            raise ArgumentsRequired("bifu create_orders requires between 1 and 100 orders")
+        symbols = []
+        for order in orders:
+            if not isinstance(order, dict):
+                raise InvalidOrder("bifu create_orders entries must be objects")
+            symbol = self.safe_string(order, "symbol")
+            if symbol is None:
+                raise ArgumentsRequired("bifu create_orders requires a symbol for each order")
+            symbols.append(symbol)
+        if len(set(symbols)) != 1:
+            raise NotSupported("bifu create_orders supports one symbol per batch")
+
+        entries = []
+        requests = []
+        market = None
+        for order in orders:
+            order_params = order.get("params", {})
+            if not isinstance(order_params, dict):
+                raise InvalidOrder("bifu create_orders params must be an object")
+            request, order_market = await self._create_order_request(
+                self.safe_string(order, "symbol"),
+                self.safe_value(order, "type"),
+                self.safe_value(order, "side"),
+                self.safe_value(order, "amount"),
+                self.safe_value(order, "price"),
+                order_params,
+            )
+            market = order_market
+            requests.append(request)
+            entries.append(self.omit(request, "instrument_id"))
+        response = await self.private_post_spot_v1_orders(
+            {"instrument_id": self.safe_integer(market, "id"), "entries": entries}
+        )
+        if not isinstance(response, dict):
+            raise BadResponse("bifu create orders response must be a JSON object")
+        acknowledgements = self.safe_list(response, "acks")
+        if acknowledgements is None or len(acknowledgements) != len(requests):
+            raise BadResponse("bifu create orders ACK count does not match request count")
+        result = []
+        for index, acknowledgement in enumerate(acknowledgements):
+            if not isinstance(acknowledgement, dict):
+                raise BadResponse("bifu create orders response has an invalid ACK entry")
+            request = requests[index]
+            client_order_id = self.safe_string(acknowledgement, "client_order_id")
+            if client_order_id != request["client_order_id"]:
+                raise BadResponse("bifu create orders ACK client_order_id does not match request")
+            status = self.safe_string(acknowledgement, "status")
+            order_id = self.safe_string(acknowledgement, "order_id")
+            if not status:
+                raise BadResponse("bifu create orders ACK is missing status")
+            if status == "REJECTED":
+                if not self.safe_string(acknowledgement, "reject_code"):
+                    raise BadResponse("bifu rejected create orders ACK is missing reject_code")
+            elif status == "PENDING" and not order_id:
+                raise BadResponse("bifu accepted create orders ACK is missing order_id")
+            result.append(self._parse_create_ack(acknowledgement, request, market))
+        return result
+
+    async def _create_order_request(self, symbol, type, side, amount, price, params):
         params = dict(params or {})
         self._check_supported_params(
             "create_order", params, {"clientOrderId", "cost", "postOnly", "timeInForce"}
@@ -298,23 +378,23 @@ class BifuREST(AsyncExchange):
             request["qty"] = quantity
         if order_type == "limit":
             request["price"] = order_price
-        response = await self.private_post_spot_v1_order(request)
-        if not isinstance(response, dict):
-            raise BadResponse("bifu create order response must be a JSON object")
+        return request, market
+
+    def _parse_create_ack(self, response, request, market):
         order_id = self.safe_string(response, "order_id")
-        if not order_id:
-            raise BadResponse("bifu create order response is missing order_id")
+        quote_quantity = self.safe_string(request, "quote_qty")
         order = self.parse_order(
             {
                 "order_id": order_id,
-                "client_order_id": client_order_id,
+                "client_order_id": request["client_order_id"],
                 "instrument_id": market["id"],
                 "side": request["side"],
                 "type": request["type"],
                 "time_in_force": request["time_in_force"],
-                "price": order_price if order_type == "limit" else None,
-                "orig_qty": "0" if quote_quantity is not None else quantity,
+                "price": self.safe_string(request, "price"),
+                "orig_qty": "0" if quote_quantity is not None else request.get("qty"),
                 "quote_qty": quote_quantity,
+                "status": self.safe_string(response, "status"),
             },
             market,
         )
@@ -345,6 +425,40 @@ class BifuREST(AsyncExchange):
             },
             market,
         )
+
+    async def cancel_orders(self, ids, symbol=None, params=None):
+        params = dict(params or {})
+        self._check_supported_params("cancel_orders", params, set())
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 100:
+            raise ArgumentsRequired("bifu cancel_orders requires between 1 and 100 order ids")
+        if symbol is None:
+            raise ArgumentsRequired("bifu cancel_orders requires a symbol")
+        if any(not isinstance(order_id, str) or not order_id for order_id in ids):
+            raise InvalidOrder("bifu cancel_orders requires non-empty string order ids")
+        await self.load_markets()
+        market = self.market(symbol)
+        instrument_id = self.safe_integer(market, "id")
+        if instrument_id is None:
+            raise BadResponse("bifu market instrument id must be an integer")
+        response = await self.private_post_spot_v1_orders_cancel(
+            {"instrument_id": instrument_id, "order_ids": ids}
+        )
+        accepted = self.safe_bool(response, "accepted") if isinstance(response, dict) else None
+        count = self.safe_integer(response, "count") if isinstance(response, dict) else None
+        if accepted is not True or count != len(ids):
+            raise BadResponse("bifu cancel orders response was not fully accepted")
+        return [
+            self.safe_order(
+                {
+                    "id": order_id,
+                    "symbol": market["symbol"],
+                    "status": None,
+                    "info": response,
+                },
+                market,
+            )
+            for order_id in ids
+        ]
 
     async def cancel_all_orders(self, symbol=None, params=None):
         params = dict(params or {})
