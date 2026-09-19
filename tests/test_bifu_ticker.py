@@ -6,7 +6,7 @@ from aiohttp import web
 from ccxt import BadResponse, NotSupported
 
 from ccxt_cm import create_exchange
-from examples.inspect_bifu_ticker import inspect_ticker
+from examples.inspect_bifu_ticker import inspect_ticker, summarize_trend
 
 
 def new_bifu(config=None):
@@ -44,6 +44,15 @@ async def bifu_ticker_server(unused_tcp_port):
         },
         ticker_status=200,
         tickers_response=None,
+        trends_response={
+            "trends": [
+                {
+                    "instrument_id": 90000001,
+                    "open_time": "1789626000000",
+                    "closes": ["537000.01", "538944.47"],
+                }
+            ]
+        },
         delay_ticker_first_seconds=0,
     )
 
@@ -89,11 +98,16 @@ async def bifu_ticker_server(unused_tcp_port):
         )
         return web.json_response(response)
 
+    async def trends(request):
+        state.calls.append((request.method, request.path, dict(request.query)))
+        return web.json_response(state.trends_response)
+
     app = web.Application()
     app.router.add_get("/market/v1/meta", meta)
     app.router.add_get("/market/v1/ticker", ticker)
     app.router.add_get("/market/v1/tickers", tickers)
     app.router.add_get("/market/v1/bookTicker", book_ticker)
+    app.router.add_get("/market/v1/trends", trends)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", unused_tcp_port).start()
@@ -275,6 +289,62 @@ async def test_fetch_bids_asks_rejects_unsupported_params_before_network():
 
 @pytest.mark.loopback
 @pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_native_trends_is_available_as_a_raw_implicit_api(bifu_ticker_server):
+    exchange = new_bifu()
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_ticker_server.url
+    try:
+        response = await exchange.public_get_market_v1_trends(
+            {"instrument_ids": "90000001,90000002"}
+        )
+    finally:
+        await exchange.close()
+
+    assert not hasattr(exchange, "fetch_trends")
+    assert response == bifu_ticker_server.trends_response
+    assert bifu_ticker_server.calls == [
+        (
+            "GET",
+            "/market/v1/trends",
+            {"instrument_ids": "90000001,90000002"},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (None, "trends list"),
+        ({"trends": []}, "exactly one market"),
+        (
+            {"trends": [{"instrument_id": 2, "open_time": "1", "closes": []}]},
+            "instrument id",
+        ),
+        (
+            {"trends": [{"instrument_id": 1, "open_time": "1", "closes": ["nan"]}]},
+            "invalid points",
+        ),
+        (
+            {"trends": [{"instrument_id": 1, "open_time": "1", "closes": "12"}]},
+            "invalid points",
+        ),
+        (
+            {"trends": [{"instrument_id": 1, "open_time": float("inf"), "closes": []}]},
+            "invalid points",
+        ),
+        (
+            {"trends": [{"instrument_id": 1, "open_time": True, "closes": [True]}]},
+            "invalid points",
+        ),
+    ],
+)
+def test_trends_inspection_rejects_malformed_responses(response, message):
+    with pytest.raises(BadResponse, match=message):
+        summarize_trend(response, "1")
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
 async def test_fetch_tickers_rejects_mini_shape_in_unified_method(bifu_ticker_server):
     exchange = new_bifu()
     exchange.set_sandbox_mode(True)
@@ -408,6 +478,10 @@ async def test_readonly_ticker_inspector_explains_the_standard_result(bifu_ticke
         "ask": 538945.02,
         "ask_volume": 0.34,
         "book_timestamp": 1789712422000,
+        "trend_open_time": 1789626000000,
+        "trend_point_count": 2,
+        "trend_first_close": 537000.01,
+        "trend_last_close": 538944.47,
     }
 
 
@@ -429,4 +503,5 @@ async def test_readonly_ticker_inspector_retries_one_timeout(bifu_ticker_server)
         "/market/v1/ticker",
         "/market/v1/ticker",
         "/market/v1/bookTicker",
+        "/market/v1/trends",
     ]

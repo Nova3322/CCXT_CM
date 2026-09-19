@@ -3,7 +3,7 @@
 这一课只读取 Bifu 测试环境的公开行情，不使用 API Key，不访问账户，也不会下单。
 
 协议依据：[Bifu 公共行情文档](https://flame-api.bifu.dev/docs/market)中的
-`GET /market/v1/ticker` 和 `GET /market/v1/bookTicker`；本轮核对时间为 2026-09-20
+`GET /market/v1/ticker`、`GET /market/v1/bookTicker` 和 `GET /market/v1/trends`；本轮核对时间为 2026-09-20
 （Asia/Shanghai）。
 
 ## 1. Ticker 是什么
@@ -73,7 +73,22 @@ best = (await exchange.fetch_bids_asks(["BTC/USDT"]))["BTC/USDT"]
 一个交易对，因此多交易对调用会逐个请求，能力声明为 `"emulated"`；这仍是正常统一接口，不是
 Bifu 特殊 `mock`。需要多档完整盘口时继续使用 `fetch_order_book()`。
 
-## 5. Jacky 手工验收
+## 5. 24 小时缩略走势为什么使用原生隐式接口
+
+Bifu 还提供 `/market/v1/trends`，一次返回多个交易对最多 24 个、固定一小时粒度的收盘价，主要给
+行情列表画缩略走势图。CCXT 没有“批量缩略走势”这一统一方法，而且 Bifu 响应只有收盘价，没有
+开、高、低和成交量，不能伪装成标准 OHLCV。
+
+因此适配器只注册 CCXT 原生隐式接口：
+
+```python
+raw = await exchange.public_get_market_v1_trends({"instrument_ids": exchange.market_id("BTC/USDT")})
+```
+
+它返回 Bifu 原始结构；需要标准 K 线时仍调用 `fetch_ohlcv()`。这里没有新增 `fetch_trends` 之类的
+专有高层方法，也不是特殊 `mock`；只是让文档中已有的公共 REST 地址能通过同一个 CCXT 实例调用。
+
+## 6. Jacky 手工验收
 
 在 `CCXT_CM-Jacky` 仓库根目录运行：
 
@@ -90,17 +105,23 @@ uv run python -m examples.inspect_bifu_ticker BTC/USDT
 - `last/open/high/low` 是价格；
 - `base_volume` 是 BTC 成交量，`quote_volume` 是 USDT 成交额；
 - `bid` / `bid_volume` 是真实买一价和数量；`ask` / `ask_volume` 是真实卖一价和数量；
-- `book_timestamp` 是最优盘口的时间，它可能与 24 小时 Ticker 时间不同。
+- `book_timestamp` 是最优盘口的时间，它可能与 24 小时 Ticker 时间不同；
+- `trend_point_count` 最多是 24；`trend_first_close` / `trend_last_close` 是这段缩略走势的首尾收盘价。
 
 测试环境偶尔响应较慢。验收工具最长等待 30 秒，第一次超时时会提示并只重试一次。重试仅存在于
 这个只读工具；适配器核心不会自动重试，写接口更不会因此重复提交。
 
-## 6. 你要能回答的五个问题
+## 7. 常见问题和答案
 
-1. `fetch_ticker` 返回的是成交统计、订单薄还是创建订单？
-2. 为什么调用时使用 `BTC/USDT`，实际请求却使用 `90000001`？
-3. `baseVolume` 和 `quoteVolume` 在 BTC/USDT 中分别是什么单位？
-4. 为什么不能使用 `last` 代替 `bid` 和 `ask`？
-5. `percentage=0.18` 表示上涨多少？
+1. `fetch_ticker` 返回什么？答：返回最新成交价和 24 小时成交统计，不是订单簿，也不会创建订单。
+2. 为什么代码用 `BTC/USDT`，请求用 `90000001`？答：前者是 CCXT 统一交易对，后者是 Bifu
+   原始标的 ID，适配器通过 markets 自动转换。
+3. BTC/USDT 的 `baseVolume` 和 `quoteVolume` 分别是什么？答：前者是 BTC 成交数量，后者是
+   USDT 成交金额。
+4. 为什么不能用 `last` 代替 `bid` 和 `ask`？答：`last` 是已经发生的成交，`bid/ask` 是当前
+   等待成交的最优买卖价，时间和含义不同。
+5. `percentage=0.18` 表示多少？答：表示上涨 `0.18%`，不是 `18%`。
+6. 为什么 trends 不映射成 `fetch_ohlcv`？答：它只有固定一小时的收盘价点，缺少标准 OHLCV
+   必须的开、高、低和成交量；强行映射会制造假数据。
 
-你亲自运行命令并能用自己的话回答后，阶段 3a 才能标记为“Jacky 已验收”。
+你亲自运行命令，并能结合这些答案解释输出后，这组公开行情能力才能标记为“Jacky 已验收”。

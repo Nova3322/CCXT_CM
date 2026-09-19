@@ -28,12 +28,13 @@
 
 ### 第一部分当前进度（2026-09-18）
 
-| 统一方法 | 自动化 | 测试环境在线 | 当前结论 |
+| 接口 / 方法 | 自动化 | 测试环境在线 | 当前结论 |
 |---|---|---|---|
 | `load_markets` / `fetch_markets` | 通过 | 通过 | 24 个现货市场；Bifu `BTC-USDT` 映射为 CCXT `BTC/USDT` |
 | `fetch_ticker` | 通过 | 通过 | 标准 Ticker；不伪造未提供的 bid/ask |
 | `fetch_tickers` | 通过 | 通过 | FULL 形态按 symbol 筛选；不把 meta 外的 instrument 伪装成市场 |
 | `fetch_bids_asks` | 通过 | 程序在线通过 | 原生 `bookTicker` 单标的查询；多标的逐一请求，故 `has="emulated"`；不以最新成交价伪造买一卖一 |
+| `public_get_market_v1_trends` | 通过 | 程序在线通过 | CCXT 无批量缩略走势统一方法，保留为原生隐式公共接口；不伪造成 OHLCV，也不新增专有高层方法 |
 | `fetch_order_book` | 通过 | 通过 | 实取买卖各 5 档；标准时间戳和 nonce；校验响应 instrument |
 | `fetch_ohlcv` | 通过 | 通过 | 实取 2 行标准六字段 OHLCV；校验响应 instrument |
 | `fetch_trades` | 通过 | 通过 | 实取 2 条标准 Trade；金额使用 CCXT 精确乘法；校验响应 instrument |
@@ -56,7 +57,7 @@
 其他订单类型、批量接口、资金流水、异常矩阵和 Bifu 专有 `mock` 完成并复审后，才形成第一
 部分领导汇报。
 
-当前全库回归：**279 passed**；核心包 statement/branch coverage **91.63%**。118 条 warning 均来自
+当前全库回归：**287 passed**；核心包 statement/branch coverage **91.64%**。119 条 warning 均来自
 aiohttp 在 Python 3.14 下的依赖层弃用提示，不是适配器失败。
 
 ## 每轮验收记录模板
@@ -364,3 +365,21 @@ Jacky 手动命令与结果：
   ETH/USDT 同时放入测试并断言两次独立请求及逐市场结果；协议文档也已补齐 `bookTicker`。
   修正后全库 **279 passed**、覆盖率 **91.63%**；118 条 warning 均来自 aiohttp/CPython 3.14
   依赖层。wheel/sdist 构建通过，wheel 已确认包含 `ccxt_cm/exchanges/bifu.py`。
+
+### 2026-09-20：第一部分中间验收——24 小时缩略走势（程序在线通过）
+
+- 功能：注册 Bifu 公开 `GET /market/v1/trends` 为 CCXT 原生隐式接口
+  `public_get_market_v1_trends`。它用于批量读取固定一小时粒度、最多 24 个收盘价点。
+- CCXT 边界：CCXT 没有对应的批量缩略走势统一方法，而且原始响应缺少 open/high/low/volume，
+  因此没有新增 `fetch_trends`，也没有伪造成标准 OHLCV；标准 K 线继续使用 `fetch_ohlcv`。该原生
+  公共地址可通过同一个 `create_exchange("bifu")` 实例调用，不属于专有高层 `mock`。
+- 自动化：本轮新增路由、参数原样传递、无伪造高层方法、单市场结构、交易对 ID、时间、最多
+  24 点、有限数值及字符串/布尔/无限值拒绝测试。公开行情专项最终 **26 passed**；全库最终
+  **287 passed**、覆盖率 **91.64%**，119 条 warning 均来自 aiohttp/CPython 3.14 依赖层。
+- 测试环境：同一只读验收工具通过适配器真实取得 BTC/USDT 的 24 个趋势点；`open_time` 有效，
+  首尾收盘价可解析。公开行情会变化，本记录不把具体价格当固定预期。
+- 安全：本轮不使用 Key，不访问账户，不创建、修改或撤销订单，也未连接生产环境。
+- 复审：需求轴、规范轴最终均为 PASS。规范轴发现列表类型、布尔值、无限时间和文档命名边界，
+  已全部补测试并修正；修正后的全库回归、在线验收、静态检查和 wheel/sdist 构建均通过。
+- Jacky 手动验收：未开始。运行 `python -m examples.inspect_bifu_ticker BTC/USDT`，结合
+  `docs/learning/03-bifu-fetch-ticker.md` 中已经附答案的说明理解输出即可，不再单独提问。

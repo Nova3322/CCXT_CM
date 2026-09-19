@@ -35,6 +35,7 @@ class BifuREST(AsyncExchange):
     public_get_market_v1_ticker = Entry("market/v1/ticker", "public", "GET", {"cost": 1})
     public_get_market_v1_tickers = Entry("market/v1/tickers", "public", "GET", {"cost": 1})
     public_get_market_v1_trades = Entry("market/v1/trades", "public", "GET", {"cost": 1})
+    public_get_market_v1_trends = Entry("market/v1/trends", "public", "GET", {"cost": 1})
     private_get_spot_v1_account = Entry("spot/v1/account", "private", "GET", {"cost": 1})
     private_get_spot_v1_fund_flows = Entry("spot/v1/fundFlows", "private", "GET", {"cost": 1})
     private_get_spot_v1_history_orders = Entry(
