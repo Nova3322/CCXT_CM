@@ -5,13 +5,16 @@ import hmac
 import json
 
 from ccxt import (
+    ArgumentsRequired,
     BadRequest,
     BadResponse,
+    InvalidOrder,
     NotSupported,
     OrderNotFound,
     PermissionDenied,
 )
 from ccxt.base.decimal_to_precision import TICK_SIZE
+from ccxt.base.precise import Precise
 from ccxt.base.types import Entry
 
 from ..base import AsyncExchange
@@ -38,6 +41,10 @@ class BifuREST(AsyncExchange):
     private_get_spot_v1_my_trades = Entry("spot/v1/myTrades", "private", "GET", {"cost": 1})
     private_get_spot_v1_open_orders = Entry("spot/v1/openOrders", "private", "GET", {"cost": 1})
     private_get_spot_v1_order_query = Entry("spot/v1/order/query", "private", "GET", {"cost": 1})
+    private_post_spot_v1_order = Entry("spot/v1/order", "private", "POST", {"cost": 1})
+    private_post_spot_v1_order_cancel = Entry(
+        "spot/v1/order/cancel", "private", "POST", {"cost": 1}
+    )
 
     def describe(self):
         return self.deep_extend(
@@ -51,6 +58,8 @@ class BifuREST(AsyncExchange):
                     "publicAPI": True,
                     "privateAPI": True,
                     "spot": True,
+                    "cancelOrder": True,
+                    "createOrder": True,
                     "fetchBalance": True,
                     "fetchClosedOrders": True,
                     "fetchMarkets": True,
@@ -181,6 +190,120 @@ class BifuREST(AsyncExchange):
                 "used": self.safe_string(item, "frozen"),
             }
         return self.safe_balance(result)
+
+    async def create_order(self, symbol, type, side, amount, price=None, params=None):
+        params = dict(params or {})
+        self._check_supported_params(
+            "create_order", params, {"clientOrderId", "postOnly", "timeInForce"}
+        )
+        if not isinstance(type, str):
+            raise InvalidOrder("bifu order type must be a string")
+        if not isinstance(side, str):
+            raise InvalidOrder("bifu order side must be a string")
+        order_type = type.lower()
+        order_side = side.lower()
+        if order_type != "limit":
+            raise NotSupported("bifu create_order currently supports limit orders only")
+        if order_side not in ("buy", "sell"):
+            raise InvalidOrder("bifu limit order side must be buy or sell")
+        if price is None:
+            raise InvalidOrder("bifu limit orders require a price")
+        amount_input = self._positive_decimal_string(amount)
+        price_input = self._positive_decimal_string(price)
+        if amount_input is None or price_input is None:
+            raise InvalidOrder("bifu order amount and price must be positive finite values")
+
+        await self.load_markets()
+        market = self.market(symbol)
+        instrument_id = self.safe_integer(market, "id")
+        if instrument_id is None:
+            raise BadResponse("bifu market instrument id must be an integer")
+        quantity = self.amount_to_precision(symbol, amount_input)
+        order_price = self.price_to_precision(symbol, price_input)
+        amount_limits = market["limits"]["amount"]
+        cost_limits = market["limits"]["cost"]
+        if amount_limits["min"] is not None and Precise.string_lt(
+            quantity, str(amount_limits["min"])
+        ):
+            raise InvalidOrder("bifu order amount is below the market minimum amount")
+        if amount_limits["max"] is not None and Precise.string_gt(
+            quantity, str(amount_limits["max"])
+        ):
+            raise InvalidOrder("bifu order amount is above the market maximum amount")
+        cost = Precise.string_mul(quantity, order_price)
+        if cost_limits["min"] is not None and Precise.string_lt(cost, str(cost_limits["min"])):
+            raise InvalidOrder("bifu order value is below the market minimum cost")
+        if cost_limits["max"] is not None and Precise.string_gt(cost, str(cost_limits["max"])):
+            raise InvalidOrder("bifu order value is above the market maximum cost")
+        client_order_id = self.safe_string(params, "clientOrderId") or self.uuid16()
+        time_in_force_value = params.get("timeInForce", "GTC")
+        if not isinstance(time_in_force_value, str):
+            raise InvalidOrder("bifu timeInForce must be a string")
+        time_in_force = time_in_force_value.upper()
+        if time_in_force == "PO":
+            time_in_force = "POST_ONLY"
+        post_only = self.safe_bool(params, "postOnly", False)
+        if post_only:
+            if time_in_force not in ("GTC", "POST_ONLY"):
+                raise InvalidOrder("bifu postOnly conflicts with timeInForce")
+            time_in_force = "POST_ONLY"
+        if time_in_force not in ("GTC", "IOC", "FOK", "POST_ONLY"):
+            raise InvalidOrder("bifu limit order timeInForce must be GTC, IOC, FOK, or PO")
+        request = {
+            "instrument_id": instrument_id,
+            "side": order_side.upper(),
+            "type": "LIMIT",
+            "client_order_id": client_order_id,
+            "time_in_force": time_in_force,
+            "price": order_price,
+            "qty": quantity,
+        }
+        response = await self.private_post_spot_v1_order(request)
+        if not isinstance(response, dict):
+            raise BadResponse("bifu create order response must be a JSON object")
+        order_id = self.safe_string(response, "order_id")
+        if not order_id:
+            raise BadResponse("bifu create order response is missing order_id")
+        order = self.parse_order(
+            {
+                "order_id": order_id,
+                "client_order_id": client_order_id,
+                "instrument_id": market["id"],
+                "side": request["side"],
+                "type": request["type"],
+                "time_in_force": request["time_in_force"],
+                "price": order_price,
+                "orig_qty": quantity,
+            },
+            market,
+        )
+        order["info"] = response
+        return order
+
+    async def cancel_order(self, id, symbol=None, params=None):
+        params = dict(params or {})
+        self._check_supported_params("cancel_order", params, set())
+        if symbol is None:
+            raise ArgumentsRequired("bifu cancel_order requires a symbol")
+        await self.load_markets()
+        market = self.market(symbol)
+        instrument_id = self.safe_integer(market, "id")
+        if instrument_id is None:
+            raise BadResponse("bifu market instrument id must be an integer")
+        response = await self.private_post_spot_v1_order_cancel(
+            {"instrument_id": instrument_id, "order_id": id}
+        )
+        if not isinstance(response, dict) or self.safe_bool(response, "accepted") is not True:
+            raise BadResponse("bifu cancel order response was not accepted")
+        return self.safe_order(
+            {
+                "id": id,
+                "symbol": market["symbol"],
+                "status": None,
+                "info": response,
+            },
+            market,
+        )
 
     async def fetch_order(self, id, symbol=None, params=None):
         params = dict(params or {})
@@ -348,6 +471,14 @@ class BifuREST(AsyncExchange):
         if unsupported:
             names = ", ".join(unsupported)
             raise NotSupported(f"bifu {method_name} does not accept params: {names}")
+
+    @staticmethod
+    def _positive_decimal_string(value):
+        try:
+            text = str(value)
+            return text if Precise.string_gt(text, "0") else None
+        except (TypeError, ValueError, OverflowError):
+            return None
 
     def _parse_fee(self, response, cost_key):
         fee_cost = self.safe_number(response, cost_key)

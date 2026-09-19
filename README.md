@@ -156,4 +156,5 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [第 2 课：Bifu `load_markets`](docs/learning/02-bifu-load-markets.md)：理解交易对、精度和限额并完成只读验收。
 - [第 3 课：Bifu `fetch_ticker`](docs/learning/03-bifu-fetch-ticker.md)：理解 24 小时行情、成交量和盘口边界。
 - [第 4 课：Bifu 私有订单查询](docs/learning/04-bifu-private-orders.md)：区分当前挂单、历史订单、单笔订单和自己的成交记录。
+- [第 5 课：Bifu 限价下单与单笔撤单](docs/learning/05-bifu-create-cancel-order.md)：理解受理回执、POST_ONLY、最终状态复查和测试环境写入保护。
 - [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。
