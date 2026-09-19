@@ -5,13 +5,27 @@ import hmac
 import json
 
 from ccxt import (
+    AccountNotEnabled,
     ArgumentsRequired,
+    AuthenticationError,
     BadRequest,
     BadResponse,
+    BadSymbol,
+    DuplicateOrderId,
+    ExchangeError,
+    ExchangeNotAvailable,
+    InsufficientFunds,
+    InvalidNonce,
     InvalidOrder,
+    MarketClosed,
     NotSupported,
+    OperationRejected,
+    OrderImmediatelyFillable,
+    OrderNotFillable,
     OrderNotFound,
     PermissionDenied,
+    RateLimitExceeded,
+    RequestTimeout,
 )
 from ccxt.base.decimal_to_precision import TICK_SIZE
 from ccxt.base.precise import Precise
@@ -22,6 +36,59 @@ from ..registry import Extension
 
 _DEVELOPMENT_REST_URL = "https://flame-api.bifu.dev"
 _DEVELOPMENT_WS_URL = "wss://flame-api.bifu.dev"
+
+_BIFU_ERROR_EXCEPTIONS = {
+    1000: BadRequest,
+    1001: BadSymbol,
+    1002: InvalidOrder,
+    1003: InvalidOrder,
+    1004: InvalidOrder,
+    1005: InvalidOrder,
+    1006: InvalidOrder,
+    1007: InvalidOrder,
+    1008: MarketClosed,
+    1009: InvalidOrder,
+    1010: InvalidOrder,
+    1011: InvalidOrder,
+    1012: InvalidOrder,
+    1013: InvalidOrder,
+    1014: InvalidOrder,
+    1015: OperationRejected,
+    1016: InvalidOrder,
+    1017: OperationRejected,
+    1018: OperationRejected,
+    1019: OrderNotFillable,
+    1020: OrderImmediatelyFillable,
+    1021: OrderImmediatelyFillable,
+    1022: OperationRejected,
+    1023: BadRequest,
+    1024: AccountNotEnabled,
+    1025: InvalidOrder,
+    2000: InsufficientFunds,
+    2001: OperationRejected,
+    2002: InsufficientFunds,
+    3002: InvalidOrder,
+    3003: DuplicateOrderId,
+    3004: InvalidOrder,
+    3005: OperationRejected,
+    3006: AccountNotEnabled,
+    3007: OperationRejected,
+    4000: AuthenticationError,
+    4001: PermissionDenied,
+    4002: AuthenticationError,
+    4003: InvalidNonce,
+    4004: PermissionDenied,
+    4007: OperationRejected,
+    4008: OperationRejected,
+    5000: RateLimitExceeded,
+    5001: RateLimitExceeded,
+    6000: ExchangeNotAvailable,
+    6001: RequestTimeout,
+    # The write may have reached Bifu. Callers must reconcile before retrying.
+    6003: RequestTimeout,
+    6004: ExchangeNotAvailable,
+    7000: ExchangeError,
+}
 
 
 class BifuREST(AsyncExchange):
@@ -171,11 +238,12 @@ class BifuREST(AsyncExchange):
         code = self.safe_integer(response, "code")
         message = self.safe_string(response, "message", "unknown error")
         if code in (3000, 3001):
-            raise OrderNotFound(f"bifu {code} {message}")
-        if code == 4001:
-            raise PermissionDenied(f"bifu {code} {message}")
+            raise OrderNotFound("bifu order not found")
         if code == 6005:
-            raise BadResponse("bifu market has no trades yet")
+            raise BadResponse(f"bifu {code} market has no trades yet: {message}")
+        exception_class = _BIFU_ERROR_EXCEPTIONS.get(code)
+        if exception_class is not None:
+            raise exception_class(f"bifu {code} {message}")
 
     async def fetch_markets(self, params=None):
         if params:

@@ -2092,7 +2092,7 @@ async def test_cancel_order_maps_bifu_order_not_found(bifu_private_server):
     exchange.urls["api"]["public"] = bifu_private_server.url
     exchange.urls["api"]["private"] = bifu_private_server.url
     try:
-        with pytest.raises(OrderNotFound, match="3000"):
+        with pytest.raises(OrderNotFound, match="order not found"):
             await exchange.cancel_order("missing-order", "BTC/USDT")
     finally:
         await exchange.close()
@@ -2230,7 +2230,7 @@ async def test_fetch_order_maps_bifu_order_not_found(bifu_private_server):
     exchange.urls["api"]["public"] = bifu_private_server.url
     exchange.urls["api"]["private"] = bifu_private_server.url
     try:
-        with pytest.raises(OrderNotFound, match="3000"):
+        with pytest.raises(OrderNotFound, match="order not found"):
             await exchange.fetch_order("missing-order", "BTC/USDT")
     finally:
         await exchange.close()

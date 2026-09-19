@@ -162,4 +162,5 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [第 8 课：Bifu 批量下单与批量撤单](docs/learning/08-bifu-batch-orders.md)：理解同序逐笔回执、部分拒绝、批量受理与最终状态复查。
 - [第 9 课：Bifu 单笔改单与批量改单](docs/learning/09-bifu-amend-orders.md)：理解原生改单、总数量、逐项受理、最终状态复查和超时安全边界。
 - [第 10 课：Bifu 资金流水](docs/learning/10-bifu-fund-flows.md)：理解余额快照与流水、流入流出、CCXT Ledger 结构、分页和脱敏验收。
+- [第 11 课：Bifu 错误映射](docs/learning/11-bifu-errors.md)：理解业务码、CCXT 异常，以及写入结果未知时为什么必须先查单再决定是否重试。
 - [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。
