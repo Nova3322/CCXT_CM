@@ -70,6 +70,7 @@ from ccxt_cm import create_exchange
         (4002, AuthenticationError),
         (4003, InvalidNonce),
         (4004, PermissionDenied),
+        (4006, AccountNotEnabled),
         (4007, OperationRejected),
         (4008, OperationRejected),
         (5000, RateLimitExceeded),

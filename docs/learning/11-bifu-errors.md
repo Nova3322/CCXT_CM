@@ -16,6 +16,7 @@ Bifu 失败时会返回自己的数字业务码。适配器不能只看到 HTTP 
 | 余额或信用额度不足 | `InsufficientFunds` | 检查余额和冻结资金 |
 | 签名或身份无效 | `AuthenticationError` | 检查当前环境的 Key、Secret 和签名 |
 | 没有权限 | `PermissionDenied` | 检查 API Key 权限，不能靠重复请求解决 |
+| 账户类型未开通（如普通账户调用 `SANDBOX_MARKET`） | `AccountNotEnabled` | 申请对应账户类型或更换正确的 Key |
 | 订单不存在或不属于当前账户 | `OrderNotFound` | 使用原订单号核对，不泄露其他账户的订单是否存在 |
 | 重复客户端订单号 | `DuplicateOrderId` | 用原客户端订单号查单，不要立刻换号重下 |
 | 请求过多或资源额度耗尽 | `RateLimitExceeded` | 等待并按上层限速策略重试 |
@@ -30,7 +31,8 @@ Bifu 失败时会返回自己的数字业务码。适配器不能只看到 HTTP 
 
 ## 测试覆盖了什么
 
-自动化测试逐项覆盖 Bifu 文档公开的 52 个业务码，检查每个码抛出的 CCXT 异常类型和错误信息。
+自动化测试逐项覆盖 Bifu 文档公开的 52 个业务码，并覆盖 2026-09-20 在线调用
+`SANDBOX_MARKET` 实际返回的 `4006`，检查每个已知码抛出的 CCXT 异常类型和错误信息。
 未知的新业务码不在适配器里猜测含义，真实 HTTP 链路测试确认后续仍由 CCXT 的 HTTP 状态处理，
 且最终异常保留原始业务码和响应；等 Bifu 文档确认后再补精确映射。
 

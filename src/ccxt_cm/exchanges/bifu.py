@@ -32,6 +32,7 @@ from ccxt.base.precise import Precise
 from ccxt.base.types import Entry
 
 from ..base import AsyncExchange
+from ..capabilities import SpecialMethod
 from ..registry import Extension
 
 _DEVELOPMENT_REST_URL = "https://flame-api.bifu.dev"
@@ -78,6 +79,9 @@ _BIFU_ERROR_EXCEPTIONS = {
     4002: AuthenticationError,
     4003: InvalidNonce,
     4004: PermissionDenied,
+    # Observed from the documented SANDBOX_MARKET endpoint when the API key
+    # belongs to a regular account rather than a Bifu Sandbox account.
+    4006: AccountNotEnabled,
     4007: OperationRejected,
     4008: OperationRejected,
     5000: RateLimitExceeded,
@@ -95,6 +99,16 @@ class BifuREST(AsyncExchange):
     """Async Bifu REST adapter; endpoint methods are added one accepted slice at a time."""
 
     id = "bifu"
+    cm_special_methods = (
+        SpecialMethod(
+            "create_mock_order",
+            "Create one Bifu sandbox-only simulated market order",
+            "docs/learning/12-bifu-mock.md",
+            private=True,
+            mutating=True,
+            returns="CCXT Order with raw Bifu acknowledgement in info",
+        ),
+    )
     public_get_market_v1_book_ticker = Entry("market/v1/bookTicker", "public", "GET", {"cost": 1})
     public_get_market_v1_depth = Entry("market/v1/depth", "public", "GET", {"cost": 1})
     public_get_market_v1_klines = Entry("market/v1/klines", "public", "GET", {"cost": 1})
@@ -417,6 +431,62 @@ class BifuREST(AsyncExchange):
         if not order_id:
             raise BadResponse("bifu create order response is missing order_id")
         return self._parse_create_ack(response, request, market)
+
+    async def create_mock_order(self, symbol, side, value, params=None):
+        """Create Bifu's sandbox-account-only simulated market order."""
+        if not self.isSandboxModeEnabled:
+            raise PermissionDenied("bifu mock orders require sandbox mode")
+        params = dict(params or {})
+        self._check_supported_params("create_mock_order", params, {"clientOrderId", "price"})
+        if not isinstance(side, str) or side.lower() not in ("buy", "sell"):
+            raise InvalidOrder("bifu mock order side must be buy or sell")
+        order_side = side.lower()
+        value_input = self._positive_decimal_string(value)
+        if value_input is None:
+            raise InvalidOrder("bifu mock order value must be a positive finite value")
+        price_input = self._positive_decimal_string(params.get("price"))
+        if "price" in params and price_input is None:
+            raise InvalidOrder("bifu mock order price must be a positive finite value")
+
+        await self.load_markets()
+        market = self.market(symbol)
+        instrument_id = self.safe_integer(market, "id")
+        if instrument_id is None:
+            raise BadResponse("bifu market instrument id must be an integer")
+        request = {
+            "instrument_id": instrument_id,
+            "side": order_side.upper(),
+            "type": "SANDBOX_MARKET",
+            "client_order_id": self.safe_string(params, "clientOrderId") or self.uuid16(),
+            "time_in_force": "IOC",
+        }
+        if order_side == "buy":
+            quantity = self.cost_to_precision(symbol, value_input)
+            limits = market["limits"]["cost"]
+            label = "value"
+            request["quote_qty"] = quantity
+        else:
+            quantity = self.amount_to_precision(symbol, value_input)
+            limits = market["limits"]["amount"]
+            label = "amount"
+            request["qty"] = quantity
+        if limits["min"] is not None and Precise.string_lt(quantity, str(limits["min"])):
+            raise InvalidOrder(f"bifu mock order {label} is below the market minimum {label}")
+        if limits["max"] is not None and Precise.string_gt(quantity, str(limits["max"])):
+            raise InvalidOrder(f"bifu mock order {label} is above the market maximum {label}")
+        if price_input is not None:
+            request["price"] = self.price_to_precision(symbol, price_input)
+
+        response = await self.private_post_spot_v1_order(request)
+        if not isinstance(response, dict):
+            raise BadResponse("bifu mock order response must be a JSON object")
+        if not self.safe_string(response, "order_id"):
+            raise BadResponse("bifu mock order response is missing order_id")
+        order = self._parse_create_ack(response, request, market)
+        # The sandbox endpoint returns an acknowledgement, not authoritative
+        # final state. Keep any extra raw fields in info for later diagnosis.
+        order["status"] = None
+        return order
 
     async def create_orders(self, orders, params=None):
         params = dict(params or {})
@@ -964,7 +1034,7 @@ class BifuREST(AsyncExchange):
         amount = self.safe_string(order, "orig_qty")
         quote_amount = self.safe_number(order, "quote_qty")
         quote_amount_market_buy = (
-            raw_type == "MARKET"
+            raw_type in ("MARKET", "SANDBOX_MARKET")
             and side == "buy"
             and self.safe_number(order, "orig_qty") == 0
             and quote_amount is not None

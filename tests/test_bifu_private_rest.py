@@ -17,7 +17,7 @@ from ccxt import (
     RequestTimeout,
 )
 
-from ccxt_cm import create_exchange
+from ccxt_cm import create_exchange, special_methods
 from examples.inspect_bifu_orders import inspect_orders
 
 
@@ -996,6 +996,228 @@ async def test_create_market_buy_order_with_cost_uses_standard_ccxt_helper(
     assert order["type"] == "market"
     assert order["side"] == "buy"
     assert '"quote_qty":"5.01"' in bifu_private_server.request_bodies[-1][2]
+
+
+async def test_bifu_declares_mock_as_a_private_mutating_special_method():
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        assert special_methods(exchange) == [
+            {
+                "method": "create_mock_order",
+                "description": "Create one Bifu sandbox-only simulated market order",
+                "documentation": "docs/learning/12-bifu-mock.md",
+                "private": True,
+                "mutating": True,
+                "returns": "CCXT Order with raw Bifu acknowledgement in info",
+            }
+        ]
+    finally:
+        await exchange.close()
+
+
+async def test_create_mock_order_rejects_non_sandbox_instance_before_network():
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    try:
+        with pytest.raises(PermissionDenied, match="require sandbox mode"):
+            await exchange.create_mock_order("BTC/USDT", "buy", 5)
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+@pytest.mark.parametrize(
+    ("side", "value", "expected_quantity"),
+    [
+        ("buy", "5.019", '"quote_qty":"5.01"'),
+        ("sell", "0.123456", '"qty":"0.12345"'),
+    ],
+)
+async def test_create_mock_order_uses_sandbox_market_without_standard_create_order(
+    bifu_private_server, side, value, expected_quantity
+):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        order = await exchange.create_mock_order(
+            "BTC/USDT",
+            side,
+            value,
+            {"clientOrderId": f"fixture-mock-{side}"},
+        )
+    finally:
+        await exchange.close()
+
+    assert order["id"] == "created-order-456"
+    assert order["symbol"] == "BTC/USDT"
+    assert order["type"] == "market"
+    assert order["side"] == side
+    assert order["timeInForce"] == "IOC"
+    request_body = bifu_private_server.request_bodies[-1][2]
+    assert '"type":"SANDBOX_MARKET"' in request_body
+    assert expected_quantity in request_body
+    assert ('"qty"' in request_body) is (side == "sell")
+    assert ('"quote_qty"' in request_body) is (side == "buy")
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_mock_order_supports_an_optional_protection_price(bifu_private_server):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        await exchange.create_mock_order(
+            "BTC/USDT",
+            "buy",
+            "5.019",
+            {"clientOrderId": "fixture-mock-price", "price": "100.129"},
+        )
+    finally:
+        await exchange.close()
+
+    assert '"price":"100.13"' in bifu_private_server.request_bodies[-1][2]
+
+
+@pytest.mark.parametrize(
+    ("side", "value", "params", "message"),
+    [
+        ("hold", 5, {}, "side must be buy or sell"),
+        ("buy", 0, {}, "value must be a positive finite value"),
+        ("buy", 5, {"price": 0}, "price must be a positive finite value"),
+        ("buy", 5, {"unsupported": True}, "does not accept params"),
+    ],
+)
+async def test_create_mock_order_rejects_invalid_input_before_network(side, value, params, message):
+    exchange = create_exchange("bifu", mode="async")
+    exchange.set_sandbox_mode(True)
+    try:
+        with pytest.raises((InvalidOrder, NotSupported), match=message):
+            await exchange.create_mock_order("BTC/USDT", side, value, params)
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_mock_order_rejects_value_below_market_minimum_before_post(
+    bifu_private_server,
+):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(InvalidOrder, match="minimum value"):
+            await exchange.create_mock_order("BTC/USDT", "buy", "4.99")
+    finally:
+        await exchange.close()
+
+    assert bifu_private_server.calls == [("GET", "/market/v1/meta", {}, None)]
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_mock_order_rejects_ack_without_order_id(bifu_private_server):
+    bifu_private_server.create_order_response = {}
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(BadResponse, match="missing order_id"):
+            await exchange.create_mock_order("BTC/USDT", "buy", "5")
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_mock_order_never_treats_ack_status_as_final(bifu_private_server):
+    bifu_private_server.create_order_response = {
+        "order_id": "created-order-456",
+        "status": "FILLED",
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        order = await exchange.create_mock_order("BTC/USDT", "buy", "5")
+    finally:
+        await exchange.close()
+
+    assert order["status"] is None
+    assert order["info"]["status"] == "FILLED"
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_create_mock_order_timeout_sends_exactly_one_post(bifu_private_server):
+    bifu_private_server.delays["/spot/v1/order"] = 0.1
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        await exchange.load_markets()
+        exchange.timeout = 10
+        with pytest.raises(RequestTimeout):
+            await exchange.create_mock_order(
+                "BTC/USDT",
+                "buy",
+                "5",
+                {"clientOrderId": "fixture-mock-timeout"},
+            )
+    finally:
+        await exchange.close()
+
+    order_posts = [
+        call for call in bifu_private_server.calls if call[0:2] == ("POST", "/spot/v1/order")
+    ]
+    assert len(order_posts) == 1
+    assert '"type":"SANDBOX_MARKET"' in bifu_private_server.request_bodies[-1][2]
+
+
+@pytest.mark.parametrize("order_type", ["mock", "sandbox_market", "SANDBOX_MARKET"])
+async def test_standard_create_order_rejects_bifu_mock_types(order_type):
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(NotSupported, match="limit and market orders only"):
+            await exchange.create_order("BTC/USDT", order_type, "buy", 5)
+    finally:
+        await exchange.close()
 
 
 @pytest.mark.parametrize(
