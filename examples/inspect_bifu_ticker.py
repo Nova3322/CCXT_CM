@@ -18,6 +18,11 @@ async def inspect_ticker(symbol="BTC/USDT", *, exchange=None, retry_delay=1.0):
             lambda: exchange.fetch_ticker(symbol),
             retry_delay=retry_delay,
         )
+        bids_asks = await retry_readonly_once(
+            lambda: exchange.fetch_bids_asks([symbol]),
+            retry_delay=retry_delay,
+        )
+        best = bids_asks[symbol]
         return {
             "environment": "test",
             "symbol": ticker["symbol"],
@@ -32,8 +37,11 @@ async def inspect_ticker(symbol="BTC/USDT", *, exchange=None, retry_delay=1.0):
             "quote_volume": ticker["quoteVolume"],
             "change": ticker["change"],
             "percentage": ticker["percentage"],
-            "bid": ticker["bid"],
-            "ask": ticker["ask"],
+            "bid": best["bid"],
+            "bid_volume": best["bidVolume"],
+            "ask": best["ask"],
+            "ask_volume": best["askVolume"],
+            "book_timestamp": best["timestamp"],
         }
     finally:
         if owns_exchange:

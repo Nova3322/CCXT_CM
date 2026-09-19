@@ -1,9 +1,10 @@
-# 第 3 课：用 `fetch_ticker` 读取 Bifu 24 小时行情
+# 第 3 课：读取 Bifu 24 小时行情和最优盘口
 
 这一课只读取 Bifu 测试环境的公开行情，不使用 API Key，不访问账户，也不会下单。
 
 协议依据：[Bifu 公共行情文档](https://flame-api.bifu.dev/docs/market)中的
-`GET /market/v1/ticker`；本轮核对时间为 2026-09-18（Asia/Shanghai）。
+`GET /market/v1/ticker` 和 `GET /market/v1/bookTicker`；本轮核对时间为 2026-09-20
+（Asia/Shanghai）。
 
 ## 1. Ticker 是什么
 
@@ -54,14 +55,23 @@ ticker = await exchange.fetch_ticker("BTC/USDT")
 转换成 `ccxt.BadResponse`，表示当前没有可组成 Ticker 的成交统计。它不会误报成
 `ExchangeNotAvailable`，因为这种情况不代表整个交易所不可用。
 
-## 4. 为什么 `bid` 和 `ask` 是空值
+## 4. 为什么成交统计和买一卖一要分开读取
 
 Bifu 的 `/market/v1/ticker` 只提供成交统计，不提供买一和卖一。买一、卖一来自独立的
 `/market/v1/bookTicker`，完整盘口来自 `/market/v1/depth`。
 
-所以 Ticker 的 `bid` 和 `ask` 保持 `None`。不能用最新成交价 `last` 假装买一或卖一，因为最新
-成交可能发生在几秒或更早以前，而当前盘口已经变化。需要盘口时应单独调用已经接入的
-`fetch_order_book()`，而不是在 Ticker 里拼接另一份数据。
+所以 `fetch_ticker()` 自己的 `bid` 和 `ask` 保持 `None`。不能用最新成交价 `last` 假装买一或
+卖一，因为最新成交可能发生在几秒或更早以前，而当前盘口已经变化。
+
+只需要买一、卖一和对应数量时调用：
+
+```python
+best = (await exchange.fetch_bids_asks(["BTC/USDT"]))["BTC/USDT"]
+```
+
+这个 CCXT 方法返回 `bid`、`bidVolume`、`ask`、`askVolume` 和盘口时间。Bifu 原生接口一次只能查
+一个交易对，因此多交易对调用会逐个请求，能力声明为 `"emulated"`；这仍是正常统一接口，不是
+Bifu 特殊 `mock`。需要多档完整盘口时继续使用 `fetch_order_book()`。
 
 ## 5. Jacky 手工验收
 
@@ -79,8 +89,8 @@ uv run python -m examples.inspect_bifu_ticker BTC/USDT
 - `timestamp` 是毫秒时间戳，`datetime` 是同一时刻的 UTC 表示；
 - `last/open/high/low` 是价格；
 - `base_volume` 是 BTC 成交量，`quote_volume` 是 USDT 成交额；
-- `bid` 和 `ask` 是 `null`，原因是 Bifu Ticker 响应不含盘口；盘口请单独调用
-  `fetch_order_book()`。
+- `bid` / `bid_volume` 是真实买一价和数量；`ask` / `ask_volume` 是真实卖一价和数量；
+- `book_timestamp` 是最优盘口的时间，它可能与 24 小时 Ticker 时间不同。
 
 测试环境偶尔响应较慢。验收工具最长等待 30 秒，第一次超时时会提示并只重试一次。重试仅存在于
 这个只读工具；适配器核心不会自动重试，写接口更不会因此重复提交。
@@ -90,7 +100,7 @@ uv run python -m examples.inspect_bifu_ticker BTC/USDT
 1. `fetch_ticker` 返回的是成交统计、订单薄还是创建订单？
 2. 为什么调用时使用 `BTC/USDT`，实际请求却使用 `90000001`？
 3. `baseVolume` 和 `quoteVolume` 在 BTC/USDT 中分别是什么单位？
-4. 为什么本阶段 `bid` 和 `ask` 必须是空值，不能使用 `last` 代替？
+4. 为什么不能使用 `last` 代替 `bid` 和 `ask`？
 5. `percentage=0.18` 表示上涨多少？
 
 你亲自运行命令并能用自己的话回答后，阶段 3a 才能标记为“Jacky 已验收”。

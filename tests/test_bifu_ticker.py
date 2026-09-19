@@ -17,6 +17,18 @@ def new_bifu(config=None):
 async def bifu_ticker_server(unused_tcp_port):
     state = SimpleNamespace(
         calls=[],
+        additional_assets=[],
+        additional_spots=[],
+        book_ticker_responses={},
+        book_ticker_response={
+            "instrument_id": 90000001,
+            "bid_price": "538943.01",
+            "bid_qty": "0.12",
+            "ask_price": "538945.02",
+            "ask_qty": "0.34",
+            "last_id": "405781215",
+            "book_time": "1789712422000",
+        },
         ticker_response={
             "instrument_id": 90000001,
             "last_price": "538944.47",
@@ -42,7 +54,8 @@ async def bifu_ticker_server(unused_tcp_port):
                 "assets": [
                     {"asset_id": 1, "code": "BTC"},
                     {"asset_id": 2, "code": "USDT"},
-                ],
+                ]
+                + state.additional_assets,
                 "spots": [
                     {
                         "instrument_id": 90000001,
@@ -51,7 +64,8 @@ async def bifu_ticker_server(unused_tcp_port):
                         "status": "TRADING",
                         "rules": {},
                     }
-                ],
+                ]
+                + state.additional_spots,
             }
         )
 
@@ -68,10 +82,18 @@ async def bifu_ticker_server(unused_tcp_port):
         response = state.tickers_response or {"tickers": [state.ticker_response]}
         return web.json_response(response)
 
+    async def book_ticker(request):
+        state.calls.append((request.method, request.path, dict(request.query)))
+        response = state.book_ticker_responses.get(
+            request.query.get("instrument_id"), state.book_ticker_response
+        )
+        return web.json_response(response)
+
     app = web.Application()
     app.router.add_get("/market/v1/meta", meta)
     app.router.add_get("/market/v1/ticker", ticker)
     app.router.add_get("/market/v1/tickers", tickers)
+    app.router.add_get("/market/v1/bookTicker", book_ticker)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", unused_tcp_port).start()
@@ -146,6 +168,107 @@ async def test_fetch_tickers_rejects_unknown_response_market(bifu_ticker_server)
     try:
         with pytest.raises(BadResponse, match="unknown market"):
             await exchange.fetch_tickers()
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_fetch_bids_asks_returns_standard_best_prices(bifu_ticker_server):
+    exchange = new_bifu()
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_ticker_server.url
+    try:
+        tickers = await exchange.fetch_bids_asks(["BTC/USDT"])
+    finally:
+        await exchange.close()
+
+    assert exchange.has["fetchBidsAsks"] == "emulated"
+    assert list(tickers) == ["BTC/USDT"]
+    ticker = tickers["BTC/USDT"]
+    assert ticker["symbol"] == "BTC/USDT"
+    assert ticker["timestamp"] == 1789712422000
+    assert ticker["datetime"] == "2026-09-18T06:20:22.000Z"
+    assert ticker["bid"] == 538943.01
+    assert ticker["bidVolume"] == 0.12
+    assert ticker["ask"] == 538945.02
+    assert ticker["askVolume"] == 0.34
+    assert ticker["last"] is None
+    assert ticker["info"]["last_id"] == "405781215"
+    assert bifu_ticker_server.calls == [
+        ("GET", "/market/v1/meta", {}),
+        ("GET", "/market/v1/bookTicker", {"instrument_id": "90000001"}),
+    ]
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_fetch_bids_asks_without_symbols_reads_all_loaded_markets(
+    bifu_ticker_server,
+):
+    bifu_ticker_server.additional_assets.append({"asset_id": 3, "code": "ETH"})
+    bifu_ticker_server.additional_spots.append(
+        {
+            "instrument_id": 90000002,
+            "base_asset_id": 3,
+            "quote_asset_id": 2,
+            "status": "TRADING",
+            "rules": {},
+        }
+    )
+    bifu_ticker_server.book_ticker_responses["90000002"] = {
+        "instrument_id": 90000002,
+        "bid_price": "3024.01",
+        "bid_qty": "1.2",
+        "ask_price": "3024.02",
+        "ask_qty": "0.8",
+        "book_time": "1789712423000",
+    }
+    exchange = new_bifu()
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_ticker_server.url
+    try:
+        tickers = await exchange.fetch_bids_asks()
+    finally:
+        await exchange.close()
+
+    assert list(tickers) == ["BTC/USDT", "ETH/USDT"]
+    assert tickers["BTC/USDT"]["bid"] == 538943.01
+    assert tickers["ETH/USDT"]["ask"] == 3024.02
+    assert bifu_ticker_server.calls == [
+        ("GET", "/market/v1/meta", {}),
+        ("GET", "/market/v1/bookTicker", {"instrument_id": "90000001"}),
+        ("GET", "/market/v1/bookTicker", {"instrument_id": "90000002"}),
+    ]
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        ([], "JSON object"),
+        ({"instrument_id": 999, "book_time": 1}, "instrument id"),
+        ({"instrument_id": 90000001, "book_time": "invalid"}, "timestamp"),
+    ],
+)
+async def test_fetch_bids_asks_rejects_malformed_response(bifu_ticker_server, response, message):
+    bifu_ticker_server.book_ticker_response = response
+    exchange = new_bifu()
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_ticker_server.url
+    try:
+        with pytest.raises(BadResponse, match=message):
+            await exchange.fetch_bids_asks(["BTC/USDT"])
+    finally:
+        await exchange.close()
+
+
+async def test_fetch_bids_asks_rejects_unsupported_params_before_network():
+    exchange = new_bifu()
+    try:
+        with pytest.raises(NotSupported, match="does not accept params"):
+            await exchange.fetch_bids_asks(["BTC/USDT"], {"unexpected": True})
     finally:
         await exchange.close()
 
@@ -280,8 +403,11 @@ async def test_readonly_ticker_inspector_explains_the_standard_result(bifu_ticke
         "quote_volume": 242966.07064,
         "change": 944.47,
         "percentage": 0.18,
-        "bid": None,
-        "ask": None,
+        "bid": 538943.01,
+        "bid_volume": 0.12,
+        "ask": 538945.02,
+        "ask_volume": 0.34,
+        "book_timestamp": 1789712422000,
     }
 
 
@@ -302,4 +428,5 @@ async def test_readonly_ticker_inspector_retries_one_timeout(bifu_ticker_server)
         "/market/v1/meta",
         "/market/v1/ticker",
         "/market/v1/ticker",
+        "/market/v1/bookTicker",
     ]

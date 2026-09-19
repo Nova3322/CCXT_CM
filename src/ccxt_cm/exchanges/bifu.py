@@ -28,6 +28,7 @@ class BifuREST(AsyncExchange):
     """Async Bifu REST adapter; endpoint methods are added one accepted slice at a time."""
 
     id = "bifu"
+    public_get_market_v1_book_ticker = Entry("market/v1/bookTicker", "public", "GET", {"cost": 1})
     public_get_market_v1_depth = Entry("market/v1/depth", "public", "GET", {"cost": 1})
     public_get_market_v1_klines = Entry("market/v1/klines", "public", "GET", {"cost": 1})
     public_get_market_v1_meta = Entry("market/v1/meta", "public", "GET", {"cost": 1})
@@ -85,6 +86,7 @@ class BifuREST(AsyncExchange):
                     "editOrder": True,
                     "editOrders": True,
                     "fetchBalance": True,
+                    "fetchBidsAsks": "emulated",
                     "fetchLedger": True,
                     "fetchClosedOrders": True,
                     "fetchMarkets": True,
@@ -1007,6 +1009,42 @@ class BifuREST(AsyncExchange):
         if self.safe_string(response, "instrument_id") != market["id"]:
             raise BadResponse("bifu ticker instrument id does not match requested market")
         return self.parse_ticker(response, market)
+
+    async def fetch_bids_asks(self, symbols=None, params=None):
+        params = dict(params or {})
+        self._check_supported_params("fetch_bids_asks", params, set())
+        await self.load_markets()
+        requested = list(self.markets) if symbols is None else self.market_symbols(symbols)
+        requested = list(dict.fromkeys(requested))
+        result = {}
+        for symbol in requested:
+            market = self.market(symbol)
+            response = await self.public_get_market_v1_book_ticker({"instrument_id": market["id"]})
+            if not isinstance(response, dict):
+                raise BadResponse("bifu book ticker must be a JSON object")
+            self._check_instrument(response, market, "book ticker")
+            result[market["symbol"]] = self.parse_book_ticker(response, market)
+        return result
+
+    def parse_book_ticker(self, response, market=None):
+        timestamp = self.safe_integer(response, "book_time")
+        if timestamp is None:
+            raise BadResponse("bifu book ticker timestamp is invalid")
+        ticker = self.safe_ticker(
+            {
+                "symbol": market["symbol"] if market else None,
+                "timestamp": timestamp,
+                "datetime": self.iso8601(timestamp),
+                "bid": self.safe_number(response, "bid_price"),
+                "bidVolume": self.safe_number(response, "bid_qty"),
+                "ask": self.safe_number(response, "ask_price"),
+                "askVolume": self.safe_number(response, "ask_qty"),
+                "info": response,
+            },
+            market,
+        )
+        ticker["average"] = None
+        return ticker
 
     async def fetch_tickers(self, symbols=None, params=None):
         params = dict(params or {})

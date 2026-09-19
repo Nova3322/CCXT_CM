@@ -33,6 +33,7 @@
 | `load_markets` / `fetch_markets` | 通过 | 通过 | 24 个现货市场；Bifu `BTC-USDT` 映射为 CCXT `BTC/USDT` |
 | `fetch_ticker` | 通过 | 通过 | 标准 Ticker；不伪造未提供的 bid/ask |
 | `fetch_tickers` | 通过 | 通过 | FULL 形态按 symbol 筛选；不把 meta 外的 instrument 伪装成市场 |
+| `fetch_bids_asks` | 通过 | 程序在线通过 | 原生 `bookTicker` 单标的查询；多标的逐一请求，故 `has="emulated"`；不以最新成交价伪造买一卖一 |
 | `fetch_order_book` | 通过 | 通过 | 实取买卖各 5 档；标准时间戳和 nonce；校验响应 instrument |
 | `fetch_ohlcv` | 通过 | 通过 | 实取 2 行标准六字段 OHLCV；校验响应 instrument |
 | `fetch_trades` | 通过 | 通过 | 实取 2 条标准 Trade；金额使用 CCXT 精确乘法；校验响应 instrument |
@@ -55,7 +56,7 @@
 其他订单类型、批量接口、资金流水、异常矩阵和 Bifu 专有 `mock` 完成并复审后，才形成第一
 部分领导汇报。
 
-当前全库回归：**273 passed**；核心包 statement/branch coverage **91.44%**。113 条 warning 均来自
+当前全库回归：**279 passed**；核心包 statement/branch coverage **91.63%**。118 条 warning 均来自
 aiohttp 在 Python 3.14 下的依赖层弃用提示，不是适配器失败。
 
 ## 每轮验收记录模板
@@ -342,3 +343,24 @@ Jacky 手动命令与结果：
   测试与文档。修复后重新执行全量回归、构建和真实测试环境验收，最终双轴复审均为 PASS。
 - Jacky 手动验收：未开始。按 `docs/learning/10-bifu-fund-flows.md` 执行只读命令并理解文末问题与
   标准答案后，再更新为“Jacky 已验收”。
+
+### 2026-09-20：第一部分中间验收——最优买卖盘口（程序在线通过）
+
+- 功能：把 Bifu 公开 `GET /market/v1/bookTicker` 接入 CCXT 标准 `fetch_bids_asks`，返回买一价、
+  买一数量、卖一价、卖一数量和盘口时间；24 小时成交统计继续由 `fetch_ticker` 单独返回，不用
+  最新成交价伪造盘口。
+- 协议边界：Bifu 原生接口一次只接受一个 `instrument_id`，所以多交易对查询由适配器逐个请求，
+  `has["fetchBidsAsks"]` 如实声明为 `"emulated"`。这仍是 CCXT 统一方法，不是 Bifu 专有
+  `mock`。响应不是对象、交易对 ID 不匹配或盘口时间非法时映射为 `BadResponse`；未确认的额外
+  参数在联网前拒绝。
+- 自动化：`pytest -q tests/test_bifu_ticker.py`，**18 passed**；覆盖标准字段、单标的与全部市场、
+  响应结构、交易对 ID、时间戳、未知参数和只读验收工具。Ruff 检查和格式检查通过。
+- 测试环境：`python -m examples.inspect_bifu_ticker BTC/USDT` 在线只读通过；当次公开快照返回
+  `bid=81562.0`、`bidVolume=0.09683`、`ask=81562.02`、`askVolume=0.0001`，并返回独立盘口
+  时间戳。行情会变化，这些值只作为当次真实链路证据。
+- 安全：公共行情不使用 Key，不访问账户，不创建或撤销订单，也未连接生产环境。
+- Jacky 手动验收：待 Jacky 亲自运行并确认能区分 `last`、`bid/ask` 和完整多档订单簿。
+- 复审与回归：需求轴、规范轴最终均为 PASS。规范轴要求补强多市场证据，已把 BTC/USDT 与
+  ETH/USDT 同时放入测试并断言两次独立请求及逐市场结果；协议文档也已补齐 `bookTicker`。
+  修正后全库 **279 passed**、覆盖率 **91.63%**；118 条 warning 均来自 aiohttp/CPython 3.14
+  依赖层。wheel/sdist 构建通过，wheel 已确认包含 `ccxt_cm/exchanges/bifu.py`。
