@@ -8,6 +8,7 @@ from aiohttp import web
 from ccxt import (
     ArgumentsRequired,
     AuthenticationError,
+    BadRequest,
     BadResponse,
     InvalidOrder,
     NotSupported,
@@ -89,6 +90,39 @@ async def bifu_private_server(unused_tcp_port):
         delays={},
         request_bodies=[],
         forced_errors={},
+        fund_flows_response={
+            "flows": [
+                {
+                    "kind": "CREDIT",
+                    "ticket": "flow-in-1",
+                    "product": "SPOT",
+                    "margin_scope": 0,
+                    "asset": 2,
+                    "amount": "100.25",
+                    "from_product": "FUNDING",
+                    "from_scope": 0,
+                    "to_product": "SPOT",
+                    "to_scope": 0,
+                    "period": "",
+                    "ts_ms": "1700000000100",
+                },
+                {
+                    "kind": "TRANSFER",
+                    "ticket": "flow-out-1",
+                    "product": "SPOT",
+                    "margin_scope": 0,
+                    "asset": 2,
+                    "amount": "-5.5",
+                    "from_product": "SPOT",
+                    "from_scope": 0,
+                    "to_product": "FUNDING",
+                    "to_scope": 0,
+                    "period": "",
+                    "ts_ms": "1700000000200",
+                },
+            ],
+            "next_cursor": "fund-page-2",
+        },
         history_orders_response=None,
         my_trades_response=None,
         open_orders_response=None,
@@ -207,6 +241,8 @@ async def bifu_private_server(unused_tcp_port):
                     "next_cursor": "next-page",
                 }
             )
+        if request.path == "/spot/v1/fundFlows":
+            return web.json_response(state.fund_flows_response)
         return web.json_response({"code": 1000}, status=404)
 
     async def meta(request):
@@ -2428,3 +2464,236 @@ async def test_fetch_my_trades_returns_standard_private_trades(bifu_private_serv
             True,
         ),
     ]
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_fetch_ledger_returns_ccxt_entries_and_preserves_cursor(
+    bifu_private_server,
+):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        entries = await exchange.fetch_ledger(
+            since=1699999999000,
+            limit=10,
+            params={"cursor": "fund-page-1", "until": 1700000010000},
+        )
+        next_cursor = exchange.safe_string(exchange.last_json_response, "next_cursor")
+    finally:
+        await exchange.close()
+
+    assert exchange.has["fetchLedger"] is True
+    assert len(entries) == 2
+    assert entries[0] == {
+        "id": "flow-in-1",
+        "timestamp": 1700000000100,
+        "datetime": "2023-11-14T22:13:20.100Z",
+        "direction": "in",
+        "account": "SPOT:0",
+        "referenceId": None,
+        "referenceAccount": None,
+        "type": "deposit",
+        "currency": "USDT",
+        "amount": 100.25,
+        "before": None,
+        "after": None,
+        "status": None,
+        "fee": None,
+        "info": bifu_private_server.fund_flows_response["flows"][0],
+    }
+    assert entries[1]["direction"] == "out"
+    assert entries[1]["type"] == "transfer"
+    assert entries[1]["amount"] == 5.5
+    assert entries[1]["account"] == "SPOT:0"
+    assert entries[1]["referenceAccount"] == "FUNDING:0"
+    assert next_cursor == "fund-page-2"
+    assert bifu_private_server.calls == [
+        ("GET", "/market/v1/meta", {}, None),
+        (
+            "GET",
+            "/spot/v1/fundFlows",
+            {
+                "cursor": "fund-page-1",
+                "end_ts_ms": "1700000010000",
+                "limit": "10",
+                "start_ts_ms": "1699999999000",
+            },
+            True,
+        ),
+    ]
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_fetch_ledger_filters_currency_after_parsing_page(bifu_private_server):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        entries = await exchange.fetch_ledger("BTC", limit=5)
+    finally:
+        await exchange.close()
+
+    assert entries == []
+    assert bifu_private_server.calls[-1][2] == {"limit": "5"}
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+@pytest.mark.parametrize("response", [{}, {"flows": "invalid"}, {"flows": [None]}])
+async def test_fetch_ledger_handles_empty_and_rejects_malformed_responses(
+    bifu_private_server, response
+):
+    bifu_private_server.fund_flows_response = response
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        if response == {}:
+            assert await exchange.fetch_ledger() == []
+        else:
+            with pytest.raises(BadResponse, match="fund flows"):
+                await exchange.fetch_ledger()
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_fetch_ledger_rejects_invalid_entry(bifu_private_server):
+    bifu_private_server.fund_flows_response = {
+        "flows": [{"ticket": "missing-required-fields"}],
+        "next_cursor": "",
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(BadResponse, match="invalid fund flow entry"):
+            await exchange.fetch_ledger()
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_fetch_ledger_preserves_unknown_kind_asset_and_zero_direction(
+    bifu_private_server,
+):
+    bifu_private_server.fund_flows_response = {
+        "flows": [
+            {
+                "kind": "BONUS",
+                "ticket": "flow-unknown",
+                "product": "SPOT",
+                "margin_scope": 0,
+                "asset": 999,
+                "amount": "0",
+                "ts_ms": "1700000000300",
+            }
+        ],
+        "next_cursor": "",
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        entries = await exchange.fetch_ledger()
+    finally:
+        await exchange.close()
+
+    assert entries[0]["type"] == "bonus"
+    assert entries[0]["currency"] == "999"
+    assert entries[0]["direction"] is None
+    assert entries[0]["amount"] == 0.0
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+@pytest.mark.parametrize("amount", ["not-a-number", "nan", "inf"])
+async def test_fetch_ledger_rejects_invalid_amount(bifu_private_server, amount):
+    flow = dict(bifu_private_server.fund_flows_response["flows"][0], amount=amount)
+    bifu_private_server.fund_flows_response = {"flows": [flow], "next_cursor": ""}
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(BadResponse, match="invalid fund flow entry"):
+            await exchange.fetch_ledger()
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_fetch_ledger_maps_permission_denied(bifu_private_server):
+    bifu_private_server.forced_errors["/spot/v1/fundFlows"] = {
+        "code": 4001,
+        "message": "permission denied",
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(PermissionDenied, match="4001"):
+            await exchange.fetch_ledger()
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.parametrize("limit", [0, 1001, 1.5])
+async def test_fetch_ledger_rejects_invalid_limit_before_network(limit):
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(BadRequest, match="integer between 1 and 1000"):
+            await exchange.fetch_ledger(limit=limit)
+    finally:
+        await exchange.close()
+
+
+async def test_fetch_ledger_rejects_unsupported_or_conflicting_params_before_network():
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(NotSupported, match="does not accept params"):
+            await exchange.fetch_ledger(params={"unsupported": True})
+        with pytest.raises(BadRequest, match="both until and end_ts_ms"):
+            await exchange.fetch_ledger(params={"until": 2, "end_ts_ms": 2})
+    finally:
+        await exchange.close()

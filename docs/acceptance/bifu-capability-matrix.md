@@ -49,12 +49,13 @@
 | `cancel_orders` | 通过 | 程序在线通过 | 原生批量撤单；必须传 symbol、每批 1–100 个订单号；汇总受理回执不伪造成逐单最终状态，须复查当前挂单 |
 | `edit_order` | 通过 | 程序在线通过 | 原生单笔改单；订单 ID 不变；数量为新总量；受理回执不伪造最终状态，须查询确认修改生效 |
 | `edit_orders` | 通过 | 程序在线通过 | 原生批量改单；同一 symbol、每批 1–100 笔；严格核对同序逐项结果并保留拒绝码 |
+| `fetch_ledger` | 通过 | 程序在线通过 | 资金流水转换为 CCXT Ledger；金额使用绝对值并分离 `direction`；支持时间、币种和游标分页边界，验收输出脱敏 |
 
 统一入口、显式测试/生产配置和签名已完成。本表只记录当前中间进度，不表示第一部分已经完成；
 其他订单类型、批量接口、资金流水、异常矩阵和 Bifu 专有 `mock` 完成并复审后，才形成第一
 部分领导汇报。
 
-当前全库回归：**256 passed**；核心包 statement/branch coverage **91.65%**。102 条 warning 均来自
+当前全库回归：**273 passed**；核心包 statement/branch coverage **91.44%**。113 条 warning 均来自
 aiohttp 在 Python 3.14 下的依赖层弃用提示，不是适配器失败。
 
 ## 每轮验收记录模板
@@ -319,3 +320,25 @@ Jacky 手动命令与结果：
   构建和真实测试环境验收，结果仍通过且最终挂单为 0。
 - Jacky 手动验收：未开始。按 `docs/learning/09-bifu-amend-orders.md` 执行同一验收命令并理解文末
   问题与标准答案后，再将本项更新为“Jacky 已验收”。
+
+### 2026-09-20：第一部分中间验收——资金流水（程序在线通过）
+
+- 功能：新增 CCXT 标准 `fetch_ledger(code, since, limit, params)`，调用 Bifu 私有只读
+  `GET /spot/v1/fundFlows`。余额快照继续由 `fetch_balance` 负责，资金变化原因由本方法返回。
+- 结构：Bifu 有符号 `amount` 转为 CCXT 绝对金额，并把正负方向分别映射成 `in` / `out`；
+  `kind` 转为标准或保真流水类型，资产 ID 转为统一币种代码。缺少依据的余额前后值、费用和关联
+  事件 ID、状态保持 `None`；原始记录完整保留在 `info`。
+- 查询边界：支持 `since`、1–1000 的 `limit`、标准 `until`、Bifu `end_ts_ms` 以及 `cursor`。
+  Bifu 端没有币种过滤参数，因此 `code` 在当前页解析后筛选；下一页游标可从
+  `exchange.last_json_response["next_cursor"]` 读取，单次返回不能称为全部历史。
+- 自动化与构建：资金流水专项 15 项、脱敏验收工具 2 项通过；全库 **273 passed**，核心包覆盖率
+  **91.44%**，113 条 warning 均来自 aiohttp 在 Python 3.14 下的依赖层弃用提示。Ruff、格式
+  检查及 wheel/sdist 构建通过。
+- 测试环境：真实只读验收取得 2 条 USDT 样本，方向集合为 `in`、类型集合为 `deposit`；CCXT
+  Ledger 标准字段检查通过，当前无下一页。工具未打印精确金额、时间、ticket、账户 ID 或凭据。
+- 安全：本轮没有划转、充值、提现、下单或生产请求。`sample_count=2` 只证明当前真实样本及转换
+  正常，不代表所有 Bifu 流水类型都已有线上样本。
+- 复审：需求轴通过；规范轴发现原始响应没有状态却填入 `status="ok"`，已改为 `None` 并同步
+  测试与文档。修复后重新执行全量回归、构建和真实测试环境验收，最终双轴复审均为 PASS。
+- Jacky 手动验收：未开始。按 `docs/learning/10-bifu-fund-flows.md` 执行只读命令并理解文末问题与
+  标准答案后，再更新为“Jacky 已验收”。

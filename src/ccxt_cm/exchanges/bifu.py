@@ -35,6 +35,7 @@ class BifuREST(AsyncExchange):
     public_get_market_v1_tickers = Entry("market/v1/tickers", "public", "GET", {"cost": 1})
     public_get_market_v1_trades = Entry("market/v1/trades", "public", "GET", {"cost": 1})
     private_get_spot_v1_account = Entry("spot/v1/account", "private", "GET", {"cost": 1})
+    private_get_spot_v1_fund_flows = Entry("spot/v1/fundFlows", "private", "GET", {"cost": 1})
     private_get_spot_v1_history_orders = Entry(
         "spot/v1/historyOrders", "private", "GET", {"cost": 1}
     )
@@ -84,6 +85,7 @@ class BifuREST(AsyncExchange):
                     "editOrder": True,
                     "editOrders": True,
                     "fetchBalance": True,
+                    "fetchLedger": True,
                     "fetchClosedOrders": True,
                     "fetchMarkets": True,
                     "fetchMyTrades": True,
@@ -214,6 +216,124 @@ class BifuREST(AsyncExchange):
                 "used": self.safe_string(item, "frozen"),
             }
         return self.safe_balance(result)
+
+    async def fetch_ledger(self, code=None, since=None, limit=None, params=None):
+        params = dict(params or {})
+        self._check_supported_params("fetch_ledger", params, {"cursor", "end_ts_ms", "until"})
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000
+        ):
+            raise BadRequest("bifu fetch_ledger limit must be an integer between 1 and 1000")
+        until = params.pop("until", None)
+        if until is not None and "end_ts_ms" in params:
+            raise BadRequest("bifu fetch_ledger cannot use both until and end_ts_ms")
+        if until is not None:
+            params["end_ts_ms"] = until
+
+        await self.load_markets()
+        currency = self.currency(code) if code is not None else None
+        request = dict(params)
+        if since is not None:
+            request["start_ts_ms"] = since
+        if limit is not None:
+            request["limit"] = limit
+        response = await self.private_get_spot_v1_fund_flows(request)
+        self.last_json_response = response
+        if response == {}:
+            return []
+        flows = self.safe_list(response, "flows")
+        if flows is None:
+            raise BadResponse("bifu fund flows response is missing flows")
+        entries = []
+        for flow in flows:
+            if not isinstance(flow, dict):
+                raise BadResponse("bifu fund flows response has an invalid fund flow entry")
+            entries.append(self.parse_ledger_entry(flow))
+        code = currency["code"] if currency is not None else None
+        return self.filter_by_currency_since_limit(
+            self.sort_by(entries, "timestamp"), code, since, limit
+        )
+
+    def parse_ledger_entry(self, flow, currency=None):
+        ticket = self.safe_string(flow, "ticket")
+        kind = self.safe_string(flow, "kind")
+        asset_id = self.safe_string(flow, "asset")
+        timestamp = self.safe_integer(flow, "ts_ms")
+        amount_raw = self.safe_string(flow, "amount")
+        if not ticket or not kind or not asset_id or timestamp is None or amount_raw is None:
+            raise BadResponse("bifu fund flows response has an invalid fund flow entry")
+        try:
+            amount = Precise.string_abs(amount_raw)
+            direction = None
+            if Precise.string_lt(amount_raw, "0"):
+                direction = "out"
+            elif Precise.string_gt(amount_raw, "0"):
+                direction = "in"
+            if self.parse_number(amount) is None:
+                raise ValueError("invalid amount")
+        except (TypeError, ValueError, OverflowError):
+            raise BadResponse("bifu fund flows response has an invalid fund flow entry") from None
+
+        assets = getattr(self, "_bifu_assets_by_id", {})
+        asset = assets.get(asset_id)
+        code = self.safe_string(asset, "code") if asset else self.safe_currency_code(asset_id)
+        if not code:
+            raise BadResponse("bifu fund flows response has an invalid fund flow entry")
+        entry_currency = currency or {"id": asset_id, "code": code}
+
+        product = self.safe_string(flow, "product")
+        scope = self.safe_string(flow, "margin_scope")
+        account = self._bifu_account_reference(product, scope)
+        reference_account = None
+        if kind == "TRANSFER":
+            from_account = self._bifu_account_reference(
+                self.safe_string(flow, "from_product"),
+                self.safe_string(flow, "from_scope"),
+            )
+            to_account = self._bifu_account_reference(
+                self.safe_string(flow, "to_product"),
+                self.safe_string(flow, "to_scope"),
+            )
+            if direction == "out":
+                account = account or from_account
+                reference_account = to_account
+            elif direction == "in":
+                account = account or to_account
+                reference_account = from_account
+
+        ledger_types = {
+            "CREDIT": "deposit",
+            "WITHDRAW": "withdrawal",
+            "TRANSFER": "transfer",
+            "BORROW": "borrow",
+            "REPAY": "repay",
+            "INTEREST": "interest",
+        }
+        return self.safe_ledger_entry(
+            {
+                "info": flow,
+                "id": ticket,
+                "timestamp": timestamp,
+                "direction": direction,
+                "account": account,
+                "referenceId": None,
+                "referenceAccount": reference_account,
+                "type": self.safe_string(ledger_types, kind, kind.lower()),
+                "currency": code,
+                "amount": amount,
+                "before": None,
+                "after": None,
+                "status": None,
+                "fee": None,
+            },
+            entry_currency,
+        )
+
+    @staticmethod
+    def _bifu_account_reference(product, scope):
+        if not product:
+            return None
+        return product if scope is None else f"{product}:{scope}"
 
     async def create_order(self, symbol, type, side, amount, price=None, params=None):
         request, market = await self._create_order_request(
