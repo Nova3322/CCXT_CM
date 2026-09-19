@@ -55,6 +55,7 @@ async def test_order_inspection_keeps_unknown_and_known_statuses():
 async def bifu_private_server(unused_tcp_port):
     state = SimpleNamespace(
         calls=[],
+        cancel_all_orders_response={"canceled": 2},
         cancel_order_response={"accepted": True},
         create_order_response={"order_id": "created-order-456"},
         delays={},
@@ -122,6 +123,8 @@ async def bifu_private_server(unused_tcp_port):
             return web.json_response(state.create_order_response)
         if request.path == "/spot/v1/order/cancel" and request.method == "POST":
             return web.json_response(state.cancel_order_response)
+        if request.path == "/spot/v1/openOrders/cancel" and request.method == "POST":
+            return web.json_response(state.cancel_all_orders_response)
         if request.path == "/spot/v1/order/query":
             if state.order_error:
                 return web.json_response(state.order_error, status=404)
@@ -748,6 +751,128 @@ async def test_cancel_order_requires_symbol_before_network():
             await exchange.cancel_order("order-123")
     finally:
         await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_cancel_all_orders_sends_market_scope_and_returns_ccxt_ack_list(
+    bifu_private_server,
+):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        orders = await exchange.cancel_all_orders("BTC/USDT")
+    finally:
+        await exchange.close()
+
+    assert exchange.has["cancelAllOrders"] is True
+    assert len(orders) == 1
+    assert orders[0]["symbol"] == "BTC/USDT"
+    assert orders[0]["status"] is None
+    assert orders[0]["info"] == {"canceled": 2}
+    assert bifu_private_server.calls == [
+        ("GET", "/market/v1/meta", {}, None),
+        ("POST", "/spot/v1/openOrders/cancel", {}, True),
+    ]
+    assert bifu_private_server.request_bodies[-1] == (
+        "POST",
+        "/spot/v1/openOrders/cancel",
+        '{"instrument_id":90000001}',
+    )
+
+
+async def test_cancel_all_orders_requires_symbol_before_network():
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(ArgumentsRequired, match="requires a symbol"):
+            await exchange.cancel_all_orders()
+    finally:
+        await exchange.close()
+
+
+async def test_cancel_all_orders_rejects_unsupported_params_before_network():
+    exchange = create_exchange("bifu", mode="async")
+    try:
+        with pytest.raises(NotSupported, match="unexpected"):
+            await exchange.cancel_all_orders("BTC/USDT", {"unexpected": True})
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+@pytest.mark.parametrize("response", [{}, {"canceled": -1}, {"canceled": "invalid"}])
+async def test_cancel_all_orders_rejects_invalid_ack(bifu_private_server, response):
+    bifu_private_server.cancel_all_orders_response = response
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(BadResponse, match="invalid canceled count"):
+            await exchange.cancel_all_orders("BTC/USDT")
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_cancel_all_orders_maps_bifu_permission_failure(bifu_private_server):
+    bifu_private_server.forced_errors["/spot/v1/openOrders/cancel"] = {
+        "code": 4001,
+        "message": "permission denied",
+    }
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(PermissionDenied, match="4001"):
+            await exchange.cancel_all_orders("BTC/USDT")
+    finally:
+        await exchange.close()
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_cancel_all_orders_timeout_sends_exactly_one_post(bifu_private_server):
+    bifu_private_server.delays["/spot/v1/openOrders/cancel"] = 0.1
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        await exchange.load_markets()
+        exchange.timeout = 10
+        with pytest.raises(RequestTimeout):
+            await exchange.cancel_all_orders("BTC/USDT")
+    finally:
+        await exchange.close()
+
+    posts = [
+        call
+        for call in bifu_private_server.calls
+        if call[0:2] == ("POST", "/spot/v1/openOrders/cancel")
+    ]
+    assert len(posts) == 1
 
 
 async def test_cancel_order_rejects_unsupported_params_before_network():

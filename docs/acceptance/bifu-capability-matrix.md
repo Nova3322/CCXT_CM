@@ -44,13 +44,14 @@
 | `create_order`（限价） | 通过 | 通过 | 标准参数、精度、5 USDT 精确边界、POST_ONLY、已知权限错误与畸形 ACK 已验；创建成功只表示受理，标准 Order 的状态保持 `None` |
 | `create_order`（市价） | 通过 | Jacky 已验收 | 买入按计价币预算、卖出按基础币数量；仅 IOC；买卖真实测试成交均取得标准 Trade，且没有残留挂单 |
 | `cancel_order` | 通过 | 通过 | 参数、订单不存在、未受理 ACK 已验；撤单成功只表示命令受理，随后用当前挂单确认订单已移除，不把受理回执伪装成 `canceled` |
+| `cancel_all_orders` | 通过 | Jacky 已验收 | 必须传 symbol；真实创建 2 张 POST_ONLY 单后按交易对撤销，回执 `canceled=2`，最终挂单 0；不把汇总 ACK 伪造成逐单终态 |
 
 统一入口、显式测试/生产配置和签名已完成。本表只记录当前中间进度，不表示第一部分已经完成；
 其他订单类型、批量接口、资金流水、异常矩阵和 Bifu 专有 `mock` 完成并复审后，才形成第一
 部分领导汇报。
 
-当前全库回归：**174 passed**；核心包 statement/branch coverage **92.60%**；Ruff 检查和格式检查
-通过。62 条 warning 均来自 aiohttp 在 Python 3.14 下的依赖层弃用提示，不是适配器失败。
+当前全库回归：**191 passed**；核心包 statement/branch coverage **92.35%**；Ruff 检查和格式检查
+通过。68 条 warning 均来自 aiohttp 在 Python 3.14 下的依赖层弃用提示，不是适配器失败。
 
 ## 每轮验收记录模板
 
@@ -244,3 +245,26 @@ Jacky 手动命令与结果：
   得到 1 条标准成交且当前挂单无残留；能够说明市价买入值是计价币预算、市价卖出值是基础币数量，
   市价 IOC 通常会立即完成而不能依赖创建后手动撤单，创建 ACK 的 `status=None` 只表示最终状态
   未知，以及必须用 `trade_count=1` 和 `order_absent_from_open_orders=true` 一起证明成交且无残留。
+
+### 2026-09-19：第一部分中间验收——按交易对撤销全部挂单
+
+- 版本与范围：工作树基于 `Jacky@37057bc`，Python 3.14.7、CCXT 4.5.78；新增 CCXT 标准
+  `cancel_all_orders(symbol)`，只连接 Bifu 测试环境的现货 `BTC/USDT`。
+- 协议与返回：适配器调用 `POST /spot/v1/openOrders/cancel` 并发送整数 `instrument_id`。Bifu
+  只返回已受理数量 `canceled`，所以标准 Order 列表中的 `status` 保持 `None`，不伪造每张订单
+  已经最终 `canceled`。当前强制要求 symbol，不开放 `instrument_id=0` 的全现货域撤单。
+- 自动化：成功请求体与签名、缺 symbol、未知参数、非法 ACK、权限错误、超时只发送一次 POST、
+  精确确认词、中途创建失败清理、清理失败残留、并发外来挂单、ACK 数量错配和撤后残留均有测试。
+  全库最终 **191 passed**，核心包覆盖率 **92.35%**，68 条 warning 均为 aiohttp/CPython 依赖层
+  弃用提示；Ruff、格式检查、wheel/sdist 构建和 diff 检查通过。
+- 测试环境证据：调用前当前挂单 0；创建两张 0.0001 BTC、60000 USDT、POST_ONLY 买单，每张
+  名义金额 6 USDT；撤销前两张都在当前挂单中；汇总 ACK 为 `canceled=2`；撤销后两张均消失且
+  `remaining_open_order_count=0`。本轮在线验收在安全修复后重新执行通过。
+- 安全与局限：撤前当前挂单必须恰好等于本轮两张自有单；发现已有或并发出现的其他挂单立即停止，
+  仅按订单号清理自有测试单。输出不显示 Key、Secret、账户 ID、订单 ID 或 clientOrderId；未连接
+  生产环境。汇总 ACK 不能证明逐单最终状态，最终结果仍以当前挂单复查为准。
+- 复审：首轮规范/需求复审发现失败清理吞异常、并发挂单误撤、残留非零仍成功、ACK 数量未核对
+  及清理抛错时会话未关闭；均已修复并补回归测试。最终规范与需求双轴复审均通过，无剩余问题。
+- Jacky 手动验收：2026-09-19 已完成。Jacky 亲自运行验收工具，结果为初始挂单 0、创建两张、
+  撤销前两张均为当前挂单、汇总 ACK `canceled=2`、撤销后两张均消失且剩余挂单 0；输出中的订单
+  标识已脱敏。教学改为一次性提供问题与标准答案，不再逐题等待回复。

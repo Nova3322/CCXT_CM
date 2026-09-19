@@ -45,6 +45,9 @@ class BifuREST(AsyncExchange):
     private_post_spot_v1_order_cancel = Entry(
         "spot/v1/order/cancel", "private", "POST", {"cost": 1}
     )
+    private_post_spot_v1_open_orders_cancel = Entry(
+        "spot/v1/openOrders/cancel", "private", "POST", {"cost": 1}
+    )
 
     def describe(self):
         return self.deep_extend(
@@ -58,6 +61,7 @@ class BifuREST(AsyncExchange):
                     "publicAPI": True,
                     "privateAPI": True,
                     "spot": True,
+                    "cancelAllOrders": True,
                     "cancelOrder": True,
                     "createOrder": True,
                     "createLimitOrder": True,
@@ -341,6 +345,35 @@ class BifuREST(AsyncExchange):
             },
             market,
         )
+
+    async def cancel_all_orders(self, symbol=None, params=None):
+        params = dict(params or {})
+        self._check_supported_params("cancel_all_orders", params, set())
+        if symbol is None:
+            raise ArgumentsRequired("bifu cancel_all_orders requires a symbol")
+        await self.load_markets()
+        market = self.market(symbol)
+        instrument_id = self.safe_integer(market, "id")
+        if instrument_id is None:
+            raise BadResponse("bifu market instrument id must be an integer")
+        response = await self.private_post_spot_v1_open_orders_cancel(
+            {"instrument_id": instrument_id}
+        )
+        if not isinstance(response, dict):
+            raise BadResponse("bifu cancel all orders response must be a JSON object")
+        canceled = self.safe_integer(response, "canceled")
+        if canceled is None or canceled < 0:
+            raise BadResponse("bifu cancel all orders response has an invalid canceled count")
+        return [
+            self.safe_order(
+                {
+                    "symbol": market["symbol"],
+                    "status": None,
+                    "info": response,
+                },
+                market,
+            )
+        ]
 
     async def fetch_order(self, id, symbol=None, params=None):
         params = dict(params or {})
