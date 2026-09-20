@@ -59,11 +59,12 @@ python -m examples.accept_bifu_mock_order \
 属于普通测试账户，没有 Sandbox 账户权限；服务端没有生成模拟订单或成交。适配器把该错误映射为
 `AccountNotEnabled`。
 
-平台随后提供了独立的开发环境 MockTrade 账户和测试 BTC/USDT 资产，但新 Key 对私有只读查询和
-`SANDBOX_MARKET` 写入都返回 HTTP 401、`4000 UNAUTHENTICATED`。同一适配器使用原测试 Key 的私有
-只读查询仍然成功，公开市场元数据也正常。官方错误表把签名错误、时间戳错误和账户不匹配分别定义
-为 `4002/4003/4004`，所以当前证据指向新 Key 尚未在该开发网关激活/识别，或对应其他开发 API
-地址；不能通过修改签名或盲目重试绕过。平台确认或重新生成可用 Key 后，再运行上面的验收命令。
+平台最初提供的内网 Key 在公网开发 URL 的私有请求上返回 HTTP 401、`4000 UNAUTHENTICATED`。
+重新生成非内网公网 Key 后，同一适配器已通过 `https://flame-api.bifu.dev` 完成私有只读查询，证明
+公网 Key、URL 和签名均有效；但 `SANDBOX_MARKET` 写入返回 HTTP 403、`4006 SANDBOX_MARKET
+requires Sandbox account`。这表示公网 Key 对应账户尚未开通 Sandbox/MockTrade 权限。失败后的
+只读复核确认没有新增挂单、历史订单或成交。平台开通该权限，或提供已经开通
+Sandbox/MockTrade 权限的公网账户后，再运行上面的验收命令；不需要修改适配器签名或请求结构。
 
 ## 问题与答案
 
