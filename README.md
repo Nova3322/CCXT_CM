@@ -164,4 +164,5 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [第 10 课：Bifu 资金流水](docs/learning/10-bifu-fund-flows.md)：理解余额快照与流水、流入流出、CCXT Ledger 结构、分页和脱敏验收。
 - [第 11 课：Bifu 错误映射](docs/learning/11-bifu-errors.md)：理解业务码、CCXT 异常，以及写入结果未知时为什么必须先查单再决定是否重试。
 - [第 12 课：Bifu 特殊 `mock`](docs/learning/12-bifu-mock.md)：理解 `SANDBOX_MARKET`、专有方法、买卖数量单位和 Sandbox 账户权限。
+- [第 13 课：Bifu WebSocket](docs/learning/13-bifu-websocket.md)：理解公共/私有实时流、签名鉴权、订单簿断档和可重复验收命令。
 - [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。

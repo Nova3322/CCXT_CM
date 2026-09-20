@@ -1,8 +1,10 @@
 """CCXT-compatible Bifu adapter for one caller-selected API environment."""
 
+import asyncio
 import hashlib
 import hmac
 import json
+from urllib.parse import urlencode
 
 from ccxt import (
     AccountNotEnabled,
@@ -11,6 +13,7 @@ from ccxt import (
     BadRequest,
     BadResponse,
     BadSymbol,
+    BaseError,
     DuplicateOrderId,
     ExchangeError,
     ExchangeNotAvailable,
@@ -18,6 +21,7 @@ from ccxt import (
     InvalidNonce,
     InvalidOrder,
     MarketClosed,
+    NetworkError,
     NotSupported,
     OperationRejected,
     OrderImmediatelyFillable,
@@ -26,6 +30,11 @@ from ccxt import (
     PermissionDenied,
     RateLimitExceeded,
     RequestTimeout,
+)
+from ccxt.async_support.base.ws.cache import (
+    ArrayCache,
+    ArrayCacheBySymbolById,
+    ArrayCacheByTimestamp,
 )
 from ccxt.base.decimal_to_precision import TICK_SIZE
 from ccxt.base.precise import Precise
@@ -1418,6 +1427,498 @@ class BifuREST(AsyncExchange):
         }
 
 
-BIFU_EXTENSION = Extension("bifu", rest=BifuREST)
+class BifuPro(BifuREST):
+    """Bifu WebSocket adapter using the exchange's URL-based subscriptions."""
 
-__all__ = ["BIFU_EXTENSION", "BifuREST"]
+    def describe(self):
+        return self.deep_extend(
+            super().describe(),
+            {
+                "has": {
+                    "ws": True,
+                    "watchBidsAsks": True,
+                    "watchBalance": True,
+                    "watchOHLCV": True,
+                    "watchOrderBook": True,
+                    "watchMyTrades": True,
+                    "watchOrders": True,
+                    "watchTicker": True,
+                    "watchTickers": True,
+                    "watchTrades": True,
+                },
+                "options": {
+                    "depthBufferLimit": 1000,
+                    "OHLCVLimit": 1000,
+                    "ordersLimit": 1000,
+                    "tradesLimit": 1000,
+                },
+                "streaming": {"keepAlive": 30000},
+            },
+        )
+
+    async def watch_ticker(self, symbol, params=None):
+        if params:
+            raise NotSupported("bifu watch_ticker does not accept params")
+        return await self._watch_market("ticker", symbol)
+
+    async def watch_tickers(self, symbols=None, params=None):
+        if params:
+            raise NotSupported("bifu watch_tickers does not accept params")
+        await self.load_markets()
+        requested = self.market_symbols(symbols)
+        tickers = await self._watch_url(
+            self._stream_url("/market/v1/stream/tickers"),
+            "tickers",
+            {"channel": "tickers"},
+        )
+        if requested is None:
+            return dict(tickers)
+        return {symbol: tickers[symbol] for symbol in requested if symbol in tickers}
+
+    async def watch_trades(self, symbol, since=None, limit=None, params=None):
+        if params:
+            raise NotSupported("bifu watch_trades does not accept params")
+        trades = await self._watch_market("trade", symbol)
+        if self.newUpdates:
+            limit = trades.getLimit(symbol, limit)
+        return self.filter_by_symbol_since_limit(trades, symbol, since, limit, True)
+
+    async def watch_order_book(self, symbol, limit=None, params=None):
+        if params:
+            raise NotSupported("bifu watch_order_book does not accept params")
+        if limit is not None and limit <= 0:
+            raise BadRequest("bifu watch_order_book limit must be positive")
+        book = await self._watch_depth(symbol)
+        result = dict(book)
+        result["bids"] = list(book["bids"])[:limit]
+        result["asks"] = list(book["asks"])[:limit]
+        return result
+
+    async def watch_bids_asks(self, symbols=None, params=None):
+        if params:
+            raise NotSupported("bifu watch_bids_asks does not accept params")
+        await self.load_markets()
+        requested = list(self.markets) if symbols is None else self.market_symbols(symbols)
+        requested = list(dict.fromkeys(requested))
+        results = await asyncio.gather(
+            *(self._watch_market("book_ticker", symbol) for symbol in requested)
+        )
+        return {ticker["symbol"]: ticker for ticker in results}
+
+    async def watch_ohlcv(self, symbol, timeframe="1m", since=None, limit=None, params=None):
+        if params:
+            raise NotSupported("bifu watch_ohlcv does not accept params")
+        if timeframe != "1m":
+            raise NotSupported("bifu WebSocket only documents the 1m kline stream")
+        candles = await self._watch_market("kline", symbol, timeframe)
+        if self.newUpdates:
+            limit = candles.getLimit(symbol, limit)
+        return self.filter_by_since_limit(candles, since, limit, 0, True)
+
+    async def watch_orders(self, symbol=None, since=None, limit=None, params=None):
+        if params:
+            raise NotSupported("bifu watch_orders does not accept params")
+        if symbol is not None:
+            await self.load_markets()
+            symbol = self.market(symbol)["symbol"]
+        orders = await self._watch_private("orders")
+        if self.newUpdates:
+            limit = orders.getLimit(symbol, limit)
+        return self.filter_by_symbol_since_limit(orders, symbol, since, limit, True)
+
+    async def watch_balance(self, params=None):
+        if params:
+            raise NotSupported("bifu watch_balance does not accept params")
+        return await self._watch_private("balance")
+
+    async def watch_my_trades(self, symbol=None, since=None, limit=None, params=None):
+        if params:
+            raise NotSupported("bifu watch_my_trades does not accept params")
+        if symbol is not None:
+            await self.load_markets()
+            symbol = self.market(symbol)["symbol"]
+        trades = await self._watch_private("myTrades")
+        if self.newUpdates:
+            limit = trades.getLimit(symbol, limit)
+        return self.filter_by_symbol_since_limit(trades, symbol, since, limit, True)
+
+    async def _watch_private(self, message_hash):
+        await self.load_markets()
+        path = "/spot/v1/userDataStream"
+        url = self._stream_url(path)
+        headers = self._private_ws_headers(path)
+        ws_options = self.options.setdefault("ws", {})
+        had_connection_options = "options" in ws_options
+        previous_connection_options = ws_options.get("options")
+        ws_options["options"] = self.extend(previous_connection_options or {}, {"headers": headers})
+        try:
+            future = self.watch(
+                url,
+                message_hash,
+                None,
+                "private",
+                {"channel": "private"},
+            )
+        finally:
+            if had_connection_options:
+                ws_options["options"] = previous_connection_options
+            else:
+                ws_options.pop("options", None)
+        try:
+            return await future
+        except NetworkError as error:
+            message = str(error)
+            if "401" in message:
+                raise AuthenticationError("bifu WebSocket authentication failed") from error
+            if "403" in message:
+                raise PermissionDenied("bifu WebSocket permission denied") from error
+            raise
+
+    def _private_ws_headers(self, path):
+        self.check_required_credentials()
+        timestamp = str(self.milliseconds())
+        payload = "\n".join((timestamp, "GET", path, ""))
+        signature = hmac.new(self.secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        return {"X-API-KEY": self.apiKey, "X-TS": timestamp, "X-SIGN": signature}
+
+    async def _watch_market(self, channel, symbol, timeframe=None):
+        await self.load_markets()
+        market = self.market(symbol)
+        message_hash = channel + ":" + market["id"]
+        if timeframe:
+            message_hash += ":" + timeframe
+        url = self._stream_url(
+            "/market/v1/stream",
+            {"instrument": market["id"], "channels": channel},
+        )
+        return await self._watch_url(
+            url,
+            message_hash,
+            {"channel": channel, "symbol": market["symbol"], "timeframe": timeframe},
+        )
+
+    async def _watch_depth(self, symbol):
+        await self.load_markets()
+        market = self.market(symbol)
+        symbol = market["symbol"]
+        message_hash = "depth:" + market["id"]
+        url = self._stream_url(
+            "/market/v1/stream",
+            {"instrument": market["id"], "channels": "depth"},
+        )
+        future = self.watch(
+            url,
+            message_hash,
+            None,
+            message_hash,
+            {"channel": "depth", "symbol": symbol, "timeframe": None},
+        )
+        client = self.clients[url]
+        states = getattr(self, "_bifu_ws_depth_states", {})
+        state = states.get(symbol)
+        if symbol not in self.orderbooks and (state is None or state["client"] is not client):
+            state = {"buffer": [], "client": client, "error": None, "task": None}
+            states[symbol] = state
+            self._bifu_ws_depth_states = states
+            state["task"] = asyncio.create_task(self._load_depth_snapshot(symbol, client, state))
+        task = state["task"] if state is not None else None
+        if task is not None:
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                error = state.get("error")
+                if error is not None:
+                    if future.done():
+                        future.exception()
+                    raise error from None
+                raise
+            except Exception as error:
+                if self.clients.get(url) is client:
+                    client.subscriptions.pop(message_hash, None)
+                    client.reject(error, message_hash)
+                    asyncio.create_task(self._close_for_resync(client))
+                if future.done():
+                    future.exception()
+                raise
+        return await future
+
+    async def _load_depth_snapshot(self, symbol, client, state):
+        try:
+            await client.connected
+            states = getattr(self, "_bifu_ws_depth_states", {})
+            if states.get(symbol) is not state or not client.isConnected:
+                raise ExchangeNotAvailable(
+                    "bifu WebSocket disconnected before the REST order book snapshot"
+                )
+            snapshot = await self.fetch_order_book(symbol)
+            states = getattr(self, "_bifu_ws_depth_states", {})
+            if states.get(symbol) is not state or not client.isConnected:
+                raise ExchangeNotAvailable(
+                    "bifu WebSocket disconnected during the REST order book snapshot"
+                )
+            if snapshot.get("nonce") is None:
+                raise BadResponse("bifu REST order book snapshot is missing last_id")
+            self.orderbooks[symbol] = self.order_book(snapshot)
+            for data, market in state["buffer"]:
+                self._apply_depth_update(client, data, market)
+        finally:
+            states = getattr(self, "_bifu_ws_depth_states", {})
+            if states.get(symbol) is state:
+                states.pop(symbol, None)
+
+    async def _watch_url(self, url, message_hash, subscription):
+        return await self.watch(url, message_hash, None, message_hash, subscription)
+
+    def _stream_url(self, path, params=None):
+        base_url = self.urls["api"].get("ws")
+        if not base_url:
+            raise BadRequest("bifu WebSocket URL is not configured")
+        url = base_url.rstrip("/") + "/" + path.lstrip("/")
+        if params:
+            url += "?" + urlencode(params)
+        return url
+
+    def handle_message(self, client, message):
+        try:
+            if not isinstance(message, dict):
+                raise BadResponse("bifu WebSocket frame must be a JSON object")
+            message_type = self.safe_string(message, "type")
+            data = message.get("data")
+            if message_type == "tickers":
+                if not isinstance(data, list):
+                    raise BadResponse("bifu WebSocket tickers data must be a list")
+                tickers = {}
+                owners = getattr(self, "_bifu_ws_ticker_owners", {})
+                for raw_ticker in data:
+                    if not isinstance(raw_ticker, dict):
+                        raise BadResponse("bifu WebSocket tickers data has an invalid entry")
+                    market_id = self.safe_string(raw_ticker, "instrument_id")
+                    markets = self.markets_by_id.get(market_id) if self.markets_by_id else None
+                    if not markets:
+                        continue
+                    market = markets[0]
+                    symbol = market["symbol"]
+                    ticker = self.parse_ticker(raw_ticker, market)
+                    tickers[symbol] = ticker
+                    self.tickers[symbol] = ticker
+                    owners[symbol] = client.url
+                self._bifu_ws_ticker_owners = owners
+                client.resolve(tickers, "tickers")
+                return
+            if not isinstance(data, dict):
+                raise BadResponse("bifu WebSocket data must be a JSON object")
+            if message_type == "balance_update":
+                self._handle_balance_update(client, data)
+                return
+            if message_type == "margin_balance_update":
+                return
+            market = self._market_from_response(data, f"WebSocket {message_type}")
+            if message_type == "ticker":
+                ticker = self.parse_ticker(data, market)
+                symbol = market["symbol"]
+                self.tickers[symbol] = ticker
+                owners = getattr(self, "_bifu_ws_ticker_owners", {})
+                owners[symbol] = client.url
+                self._bifu_ws_ticker_owners = owners
+                client.resolve(ticker, "ticker:" + market["id"])
+            elif message_type == "trade":
+                symbol = market["symbol"]
+                if symbol not in self.trades:
+                    self.trades[symbol] = ArrayCache(self.options["tradesLimit"])
+                self.trades[symbol].append(self.parse_trade(data, market))
+                client.resolve(self.trades[symbol], "trade:" + market["id"])
+            elif message_type == "depth":
+                self._handle_depth(client, data, market)
+            elif message_type == "book_ticker":
+                ticker = self.parse_book_ticker(data, market)
+                self.bidsasks[market["symbol"]] = ticker
+                client.resolve(ticker, "book_ticker:" + market["id"])
+            elif message_type == "kline":
+                timeframe = self.safe_string(data, "period")
+                if timeframe != "1m":
+                    raise BadResponse("bifu WebSocket returned an unsupported kline period")
+                symbol = market["symbol"]
+                self.ohlcvs.setdefault(symbol, {})
+                if timeframe not in self.ohlcvs[symbol]:
+                    self.ohlcvs[symbol][timeframe] = ArrayCacheByTimestamp(
+                        self.options["OHLCVLimit"]
+                    )
+                candles = self.ohlcvs[symbol][timeframe]
+                candles.append(self.parse_ohlcv(data, market))
+                client.resolve(candles, "kline:" + market["id"] + ":" + timeframe)
+            elif message_type == "order_update":
+                if self.orders is None:
+                    self.orders = ArrayCacheBySymbolById(self.options["ordersLimit"])
+                order_id = self.safe_string(data, "order_id")
+                if not order_id:
+                    raise BadResponse("bifu WebSocket order update is missing order_id")
+                existing = self.orders.hashmap.get(market["symbol"], {}).get(order_id)
+                raw_order = data
+                if existing is not None:
+                    raw_order = self.extend(self.omit(existing["info"], "fill"), data)
+                self.orders.append(self.parse_order(raw_order, market))
+                client.resolve(self.orders, "orders")
+                fill = self.safe_dict(data, "fill")
+                if fill and self.safe_string(fill, "trade_id"):
+                    if self.myTrades is None:
+                        self.myTrades = ArrayCacheBySymbolById(self.options["tradesLimit"])
+                    raw_trade = self.extend(
+                        fill,
+                        {
+                            "order_id": self.safe_string(raw_order, "order_id"),
+                            "instrument_id": self.safe_integer(raw_order, "instrument_id"),
+                            "side": self.safe_string(raw_order, "side"),
+                            "ts_ms": self.safe_string(raw_order, "updated_ts"),
+                        },
+                    )
+                    self.myTrades.append(self.parse_trade(raw_trade, market))
+                    client.resolve(self.myTrades, "myTrades")
+            else:
+                raise BadResponse("bifu WebSocket frame has an unknown type")
+        except Exception as error:
+            if not isinstance(error, BaseError):
+                error = BadResponse("Malformed bifu WebSocket payload")
+            client.reject(error)
+
+    def _handle_depth(self, client, data, market):
+        symbol = market["symbol"]
+        state = getattr(self, "_bifu_ws_depth_states", {}).get(symbol)
+        if state is not None and state["client"] is client and symbol not in self.orderbooks:
+            state["buffer"].append((data, market))
+            limit = self.safe_integer(self.options, "depthBufferLimit", 1000)
+            if len(state["buffer"]) > limit:
+                error = ExchangeNotAvailable(
+                    "bifu WebSocket depth buffer exceeded before the REST snapshot"
+                )
+                state["error"] = error
+                task = state.get("task")
+                if task is not None and not task.done():
+                    task.cancel()
+                client.reject(error, "depth:" + market["id"])
+                asyncio.create_task(self._close_for_resync(client))
+            return
+        self._apply_depth_update(client, data, market)
+
+    def _apply_depth_update(self, client, data, market):
+        symbol = market["symbol"]
+        message_hash = "depth:" + market["id"]
+        current = self.orderbooks.get(symbol)
+        last_id = self.safe_integer(data, "last_id")
+        previous_id = self.safe_integer(data, "prev_id")
+        if last_id is None or previous_id is None:
+            self.orderbooks.pop(symbol, None)
+            client.subscriptions.pop(message_hash, None)
+            error = BadResponse("bifu WebSocket depth sequence is invalid")
+            client.reject(error, message_hash)
+            asyncio.create_task(self._close_for_resync(client))
+            raise error
+        if current is None:
+            raise BadResponse("bifu WebSocket depth update arrived without a REST snapshot")
+        if last_id <= current["nonce"]:
+            return
+        if previous_id != current["nonce"]:
+            self.orderbooks.pop(symbol, None)
+            client.subscriptions.pop(message_hash, None)
+            error = InvalidNonce("bifu WebSocket order book gap; reconnect for a new snapshot")
+            client.reject(error, message_hash)
+            asyncio.create_task(self._close_for_resync(client))
+            raise error
+        for side in ("bids", "asks"):
+            updates = self.safe_list(data, side, [])
+            for update in updates:
+                self.handle_delta(
+                    current[side],
+                    [self.safe_number(update, "price"), self.safe_number(update, "qty")],
+                )
+        timestamp = self.safe_integer(data, "book_time")
+        current["nonce"] = last_id
+        current["timestamp"] = timestamp
+        current["datetime"] = self.iso8601(timestamp)
+        client.resolve(self.orderbooks[symbol], message_hash)
+
+    def handle_delta(self, bookside, delta):
+        bookside.store(delta[0], delta[1])
+
+    def _handle_balance_update(self, client, data):
+        updates = self.safe_list(data, "balances")
+        if updates is None:
+            updates = [data]
+        stored = getattr(self, "_bifu_ws_balances", {})
+        for update in updates:
+            asset_id = self.safe_string(update, "asset_id")
+            if not asset_id:
+                raise BadResponse("bifu WebSocket balance asset id is missing")
+            stored[asset_id] = update
+        self._bifu_ws_balances = stored
+        assets = getattr(self, "_bifu_assets_by_id", {})
+        result = {"info": {"balances": list(stored.values())}}
+        for asset_id, item in stored.items():
+            asset = assets.get(asset_id)
+            code = self.safe_string(asset, "code") if asset else self.safe_currency_code(asset_id)
+            if not code:
+                raise BadResponse("bifu WebSocket balance asset id is unknown")
+            result[code] = {
+                "free": self.safe_string(item, "available"),
+                "used": self.safe_string(item, "frozen"),
+            }
+        self.balance = self.safe_balance(result)
+        client.resolve(self.balance, "balance")
+
+    async def _close_for_resync(self, client):
+        await client.close()
+        self.clients.pop(client.url, None)
+
+    def _reset_client_state(self, client):
+        subscriptions = list(client.subscriptions.values())
+        for subscription in subscriptions:
+            if not isinstance(subscription, dict):
+                continue
+            channel = self.safe_string(subscription, "channel")
+            symbol = self.safe_string(subscription, "symbol")
+            if channel in ("ticker", "tickers"):
+                owners = getattr(self, "_bifu_ws_ticker_owners", {})
+                for ticker_symbol, owner in list(owners.items()):
+                    if owner == client.url:
+                        self.tickers.pop(ticker_symbol, None)
+                        owners.pop(ticker_symbol, None)
+                self._bifu_ws_ticker_owners = owners
+            elif channel == "depth" and symbol:
+                self.orderbooks.pop(symbol, None)
+                states = getattr(self, "_bifu_ws_depth_states", {})
+                state = states.get(symbol)
+                if state is not None and state["client"] is client:
+                    state["error"] = ExchangeNotAvailable(
+                        "bifu WebSocket disconnected before the order book snapshot was ready"
+                    )
+                    task = state.get("task")
+                    if task is not None and not task.done():
+                        task.cancel()
+                    states.pop(symbol, None)
+            elif channel == "trade" and symbol:
+                self.trades.pop(symbol, None)
+            elif channel == "book_ticker" and symbol:
+                self.bidsasks.pop(symbol, None)
+            elif channel == "kline" and symbol:
+                timeframe = self.safe_string(subscription, "timeframe")
+                if symbol in self.ohlcvs and timeframe:
+                    self.ohlcvs[symbol].pop(timeframe, None)
+                    if not self.ohlcvs[symbol]:
+                        self.ohlcvs.pop(symbol, None)
+            elif channel == "private":
+                self.orders = None
+                self.myTrades = None
+                self.balance = {}
+                self._bifu_ws_balances = {}
+
+    def on_close(self, client, error):
+        self._reset_client_state(client)
+        super().on_close(client, error)
+
+    def on_error(self, client, error):
+        self._reset_client_state(client)
+        super().on_error(client, error)
+
+
+BIFU_EXTENSION = Extension("bifu", rest=BifuREST, pro=BifuPro)
+
+__all__ = ["BIFU_EXTENSION", "BifuPro", "BifuREST"]
