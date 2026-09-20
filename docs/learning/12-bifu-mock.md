@@ -57,8 +57,13 @@ python -m examples.accept_bifu_mock_order \
 2026-09-20 使用现有 Jacky 测试 Key 调用时，Bifu 返回 HTTP 403 和业务码 `4006`：
 `SANDBOX_MARKET requires Sandbox account`。这证明 URL、签名和请求结构已经到达正确接口，但该 Key
 属于普通测试账户，没有 Sandbox 账户权限；服务端没有生成模拟订单或成交。适配器把该错误映射为
-`AccountNotEnabled`。平台开通 Sandbox 账户或提供对应 Key 后，重新运行上面的验收命令即可完成
-在线闭环。
+`AccountNotEnabled`。
+
+平台随后提供了独立的开发环境 MockTrade 账户和测试 BTC/USDT 资产，但新 Key 对私有只读查询和
+`SANDBOX_MARKET` 写入都返回 HTTP 401、`4000 UNAUTHENTICATED`。同一适配器使用原测试 Key 的私有
+只读查询仍然成功，公开市场元数据也正常。官方错误表把签名错误、时间戳错误和账户不匹配分别定义
+为 `4002/4003/4004`，所以当前证据指向新 Key 尚未在该开发网关激活/识别，或对应其他开发 API
+地址；不能通过修改签名或盲目重试绕过。平台确认或重新生成可用 Key 后，再运行上面的验收命令。
 
 ## 问题与答案
 

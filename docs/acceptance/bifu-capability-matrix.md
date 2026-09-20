@@ -52,12 +52,13 @@
 | `edit_order` | 通过 | 程序在线通过 | 原生单笔改单；订单 ID 不变；数量为新总量；受理回执不伪造最终状态，须查询确认修改生效 |
 | `edit_orders` | 通过 | 程序在线通过 | 原生批量改单；同一 symbol、每批 1–100 笔；严格核对同序逐项结果并保留拒绝码 |
 | `fetch_ledger` | 通过 | 程序在线通过 | 资金流水转换为 CCXT Ledger；金额使用绝对值并分离 `direction`；支持时间、币种和游标分页边界，验收输出脱敏 |
-| `create_mock_order`（Bifu 专有） | 通过 | 待 Sandbox 账户 | 独立专有方法固定发送 `SANDBOX_MARKET`；当前 Key 在线返回 `4006 requires Sandbox account`，请求未产生订单或成交 |
+| `create_mock_order`（Bifu 专有） | 通过 | 待 MockTrade Key 激活 | 独立专有方法固定发送 `SANDBOX_MARKET`；专用账号已有测试资产，但新 Key 在任何私有请求上返回 `4000 UNAUTHENTICATED`，请求未产生订单或成交 |
 | Bifu 业务错误映射 | 通过 | 已有在线样本 | 文档公开的 52 个业务码和在线发现的 `4006` 映射为 CCXT 异常；写入结果未知映射为 `RequestTimeout`，要求先查单再决定是否重试 |
 
 统一入口、显式测试/生产配置和签名已完成。本表只记录当前中间进度，不表示第一部分已经完成；
 其他订单类型、批量接口、资金流水和异常矩阵已经完成；Bifu 专有 `mock` 已完成协议确认和离线
-实现，当前只缺平台提供 Sandbox 账户权限后的在线成交闭环，之后才形成第一部分领导汇报。
+实现，当前只缺平台确认专用 MockTrade Key 已在开发网关激活后的在线成交闭环，之后才形成第一部分
+领导汇报。
 
 当前全库回归：**365 passed**；核心包 statement/branch coverage **91.77%**。127 条 warning 均来自
 aiohttp 在 Python 3.14 下的依赖层弃用提示，不是适配器失败。
@@ -420,7 +421,12 @@ Jacky 手动命令与结果：
   均来自 aiohttp 在 Python 3.14 下的依赖层弃用提示。
 - 在线结果：现有 Jacky 测试 Key 的签名请求到达正确接口，但服务端返回 HTTP 403、业务码
   `4006 SANDBOX_MARKET requires Sandbox account`；请求没有生成模拟订单或成交。该码已映射为
-  `AccountNotEnabled`。后续只需平台开通 Sandbox 账户或提供对应 Key，再运行脱敏验收工具。
+  `AccountNotEnabled`。平台随后提供了独立的开发环境 MockTrade 账户和测试 BTC/USDT 资产。
+- 新账号复查：同一适配器和开发 URL 下，原测试 Key 的私有只读查询成功；新 MockTrade Key 的
+  私有只读与 `SANDBOX_MARKET` 写入都稳定返回 HTTP 401、`4000 UNAUTHENTICATED`。公开元数据正常，
+  且官方把签名错误、时间戳错误、账户不匹配分别定义为 `4002/4003/4004`，因此未修改已验证的签名
+  协议或猜测额外请求头。需要平台确认该 Key 已在 `https://flame-api.bifu.dev` 激活并绑定正确账户，
+  或重新生成可用的开发环境 Key。两次写入探测均未生成订单或成交。
 - 安全：验收工具为每轮写入生成唯一 `client_order_id`，结果未知时绝不自动重试，只查询并清理
   本轮可识别的当前挂单；本次手工探测使用固定客户端订单号，并在写入前后做只读核查。所有输出
   均隐去 Key、账户、订单、clientOrderId 和成交 ID，未连接生产环境。
