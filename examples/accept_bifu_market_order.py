@@ -7,8 +7,12 @@ from decimal import Decimal, InvalidOperation
 
 from ccxt import OrderNotFound, RequestTimeout
 
-from ccxt_cm import create_exchange
-from examples._bifu_write import credentials_from_environment, load_markets_with_retry
+from examples._bifu_write import (
+    cleanup_owned_orders,
+    load_markets_with_retry,
+    new_client_order_id,
+    prepare_sandbox_exchange,
+)
 
 _CONFIRMATION = "BIFU_TEST_MARKET_WRITE"
 
@@ -64,23 +68,36 @@ async def accept_market_order(
         raise ValueError("market-order side must be buy or sell")
     _validate_value(value)
 
-    owns_exchange = exchange is None
-    if owns_exchange:
-        exchange = create_exchange("bifu", credentials_from_environment(), mode="async")
-        exchange.set_sandbox_mode(True)
-
+    exchange, owns_exchange = prepare_sandbox_exchange(exchange)
+    client_order_id = new_client_order_id()
+    client_ids = {client_order_id}
+    owned_ids = set()
     created = None
+    write_started = False
     open_orders_checked = False
     try:
         await load_markets_with_retry(exchange)
+        write_started = True
         if side == "buy":
-            created = await exchange.create_market_buy_order_with_cost(symbol, value)
+            created = await exchange.create_market_buy_order_with_cost(
+                symbol,
+                value,
+                {"clientOrderId": client_order_id},
+            )
             value_unit = "quote"
         else:
-            created = await exchange.create_order(symbol, "market", "sell", value)
+            created = await exchange.create_order(
+                symbol,
+                "market",
+                "sell",
+                value,
+                None,
+                {"clientOrderId": client_order_id},
+            )
             value_unit = "base"
 
         order_id = created["id"]
+        owned_ids.add(order_id)
         after_create = await _wait_for_order(exchange, order_id, symbol, poll_attempts, poll_delay)
         trades = await _wait_for_trades(exchange, order_id, symbol, poll_attempts, poll_delay)
         open_orders = await exchange.fetch_open_orders(symbol)
@@ -132,14 +149,16 @@ async def accept_market_order(
         }
     finally:
         try:
-            if created is not None and not open_orders_checked:
-                order_id = created["id"]
-                open_orders = await exchange.fetch_open_orders(symbol)
-                if any(order["id"] == order_id for order in open_orders):
-                    await exchange.cancel_order(order_id, symbol)
-                    open_orders = await exchange.fetch_open_orders(symbol)
-                    if any(order["id"] == order_id for order in open_orders):
-                        raise RuntimeError("test market order is still open after cleanup cancel")
+            if write_started and not open_orders_checked:
+                await cleanup_owned_orders(
+                    exchange,
+                    symbol,
+                    owned_ids,
+                    client_ids,
+                    label="market-order acceptance",
+                    poll_attempts=poll_attempts,
+                    poll_delay=poll_delay,
+                )
         finally:
             if owns_exchange:
                 await exchange.close()

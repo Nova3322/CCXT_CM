@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — 2026-09-20
+
+- 完成 Bifu 公共及私有异步 REST、Bifu 专有 `create_mock_order`，以及公共及私有 WebSocket 适配。
+- 写入验收工具统一强制 Bifu Sandbox、预生成 `clientOrderId` 并按本轮订单安全清理；禁止误用生产实例。
+- 完成测试环境在线验收、全量回归、双轴代码复审、无调用点清理检查及 wheel/sdist 正式构建。
+
 ## 0.1.0 — 2026-09-15
 
 - 官方 sync / async REST / Pro 类动态解析和原实例复用。

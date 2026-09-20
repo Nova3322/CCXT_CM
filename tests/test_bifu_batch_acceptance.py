@@ -5,11 +5,14 @@ from examples.accept_bifu_batch_orders import accept_batch_orders
 
 class FakeExchange:
     def __init__(self):
+        self.id = "bifu"
+        self.isSandboxModeEnabled = True
         self.calls = []
         self.closed = False
         self.orders = []
 
     def set_sandbox_mode(self, enabled):
+        self.isSandboxModeEnabled = enabled
         self.calls.append(("set_sandbox_mode", enabled))
 
     async def close(self):

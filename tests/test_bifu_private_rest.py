@@ -312,6 +312,26 @@ async def test_fetch_balance_authenticates_and_returns_ccxt_balance(bifu_private
 
 @pytest.mark.loopback
 @pytest.mark.allow_hosts(["127.0.0.1"])
+async def test_fetch_balance_rejects_unsupported_params_before_request(bifu_private_server):
+    exchange = create_exchange(
+        "bifu",
+        {"apiKey": "fixture-key", "secret": "fixture-secret"},
+        mode="async",
+    )
+    exchange.set_sandbox_mode(True)
+    exchange.urls["api"]["public"] = bifu_private_server.url
+    exchange.urls["api"]["private"] = bifu_private_server.url
+    try:
+        with pytest.raises(NotSupported, match="fetch_balance does not accept params"):
+            await exchange.fetch_balance({"accountType": "spot"})
+    finally:
+        await exchange.close()
+
+    assert bifu_private_server.calls == []
+
+
+@pytest.mark.loopback
+@pytest.mark.allow_hosts(["127.0.0.1"])
 async def test_create_limit_order_sends_bifu_request_and_returns_ccxt_ack(
     bifu_private_server,
 ):

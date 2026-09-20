@@ -292,8 +292,9 @@ class BifuREST(AsyncExchange):
         return [self.parse_market(spot, assets_by_id) for spot in spots]
 
     async def fetch_balance(self, params=None):
+        self._check_supported_params("fetch_balance", params or {}, set())
         await self.load_markets()
-        response = await self.private_get_spot_v1_account(params or {})
+        response = await self.private_get_spot_v1_account({})
         balances = self.safe_list(response, "balances")
         if balances is None:
             raise BadResponse("bifu account response is missing balances")

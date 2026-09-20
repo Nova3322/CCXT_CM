@@ -6,11 +6,14 @@ from examples.accept_bifu_cancel_all_orders import accept_cancel_all_orders
 
 class FakeExchange:
     def __init__(self):
+        self.id = "bifu"
+        self.isSandboxModeEnabled = True
         self.calls = []
         self.closed = False
         self.orders = []
 
     def set_sandbox_mode(self, enabled):
+        self.isSandboxModeEnabled = enabled
         self.calls.append(("set_sandbox_mode", enabled))
 
     async def close(self):
@@ -28,7 +31,7 @@ class FakeExchange:
     async def create_order(self, symbol, type, side, amount, price, params):
         order = {
             "id": f"secret-order-{len(self.orders) + 1}",
-            "clientOrderId": f"secret-client-{len(self.orders) + 1}",
+            "clientOrderId": params["clientOrderId"],
             "symbol": symbol,
             "type": type,
             "side": side,
@@ -244,8 +247,11 @@ async def test_cancel_all_acceptance_rejects_any_remaining_open_order():
 
 async def test_owned_exchange_closes_even_when_failed_cleanup_still_has_order(monkeypatch):
     exchange = FakeCleanupFails()
-    monkeypatch.setattr(acceptance_module, "create_exchange", lambda *args, **kwargs: exchange)
-    monkeypatch.setattr(acceptance_module, "credentials_from_environment", lambda: {})
+    monkeypatch.setattr(
+        acceptance_module,
+        "prepare_sandbox_exchange",
+        lambda _exchange=None, **kwargs: (exchange, True),
+    )
 
     with pytest.raises(RuntimeError, match="may remain open"):
         await accept_cancel_all_orders(

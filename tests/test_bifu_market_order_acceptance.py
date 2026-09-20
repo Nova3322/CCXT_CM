@@ -6,14 +6,16 @@ from examples.accept_bifu_market_order import accept_market_order
 
 class FakeExchange:
     def __init__(self):
+        self.id = "bifu"
+        self.isSandboxModeEnabled = True
         self.calls = []
 
     async def load_markets(self):
         self.calls.append(("load_markets",))
         return {"BTC/USDT": {"symbol": "BTC/USDT"}}
 
-    async def create_market_buy_order_with_cost(self, symbol, cost):
-        self.calls.append(("create_market_buy_order_with_cost", symbol, cost))
+    async def create_market_buy_order_with_cost(self, symbol, cost, params):
+        self.calls.append(("create_market_buy_order_with_cost", symbol, cost, params))
         return {
             "id": "secret-order-id",
             "clientOrderId": "secret-client-id",
@@ -27,8 +29,8 @@ class FakeExchange:
             "filled": None,
         }
 
-    async def create_order(self, symbol, type, side, amount):
-        self.calls.append(("create_order", symbol, type, side, amount))
+    async def create_order(self, symbol, type, side, amount, price, params):
+        self.calls.append(("create_order", symbol, type, side, amount, price, params))
         return {
             "id": "secret-order-id",
             "clientOrderId": "secret-client-id",
@@ -138,9 +140,12 @@ async def test_market_buy_acceptance_uses_ccxt_cost_helper_and_redacts_ids():
         poll_delay=0,
     )
 
+    create_params = exchange.calls[1][3]
+    assert len(create_params["clientOrderId"]) == 16
+    int(create_params["clientOrderId"], 16)
     assert exchange.calls == [
         ("load_markets",),
-        ("create_market_buy_order_with_cost", "BTC/USDT", 5.5),
+        ("create_market_buy_order_with_cost", "BTC/USDT", 5.5, create_params),
         ("fetch_order", "secret-order-id", "BTC/USDT"),
         ("fetch_my_trades", "BTC/USDT", {"order_id": "secret-order-id"}),
         ("fetch_open_orders", "BTC/USDT"),
@@ -185,7 +190,10 @@ async def test_market_sell_acceptance_uses_base_amount():
         "market",
         "sell",
         0.0001,
+        None,
+        exchange.calls[1][6],
     )
+    assert len(exchange.calls[1][6]["clientOrderId"]) == 16
     assert result["requested_value_unit"] == "base"
 
 
@@ -274,7 +282,7 @@ async def test_market_order_acceptance_cleans_up_if_query_fails_after_create():
 async def test_market_order_acceptance_surfaces_failed_cleanup():
     exchange = FakeQueryTimeoutWithUnexpectedOpen(remains_open=True)
 
-    with pytest.raises(RuntimeError, match="still open after cleanup"):
+    with pytest.raises(RuntimeError, match="may remain open"):
         await accept_market_order(
             "BTC/USDT",
             "buy",

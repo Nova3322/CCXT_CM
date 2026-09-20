@@ -1,6 +1,7 @@
 # CCXT 统一 API 与 Bifu 粗粒度重排研究
 
-> 研究日期：2026-09-18（Asia/Shanghai）  
+> 研究日期：2026-09-18（Asia/Shanghai）
+>
 > 范围：只核对 CCXT 官方 Manual、CCXT Pro Manual、API Spec 与官方 GitHub；不代表 Bifu
 > 已实现或已在线验收任何能力。
 

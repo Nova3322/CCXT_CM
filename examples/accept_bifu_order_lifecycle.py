@@ -6,8 +6,13 @@ import json
 
 from ccxt import OrderNotFound, RequestTimeout
 
-from ccxt_cm import create_exchange
-from examples._bifu_write import credentials_from_environment, load_markets_with_retry
+from examples._bifu_write import (
+    cleanup_owned_orders,
+    load_markets_with_retry,
+    new_client_order_id,
+    prepare_sandbox_exchange,
+    wait_until_orders_absent,
+)
 
 _CONFIRMATION = "BIFU_TEST_WRITE"
 _TERMINAL_STATUSES = {"canceled", "closed", "expired", "rejected"}
@@ -51,24 +56,26 @@ async def accept_order_lifecycle(
     if confirmation != _CONFIRMATION:
         raise RuntimeError(f"test write requires confirmation {_CONFIRMATION}")
 
-    owns_exchange = exchange is None
-    if owns_exchange:
-        exchange = create_exchange("bifu", credentials_from_environment(), mode="async")
-        exchange.set_sandbox_mode(True)
-
+    exchange, owns_exchange = prepare_sandbox_exchange(exchange)
+    client_order_id = new_client_order_id()
+    client_ids = {client_order_id}
+    owned_ids = set()
     created = None
-    cancel_attempted = False
+    write_started = False
+    cleanup_verified = False
     try:
         await load_markets_with_retry(exchange)
+        write_started = True
         created = await exchange.create_order(
             symbol,
             "limit",
             side,
             amount,
             price,
-            {"postOnly": True},
+            {"clientOrderId": client_order_id, "postOnly": True},
         )
         order_id = created["id"]
+        owned_ids.add(order_id)
         after_create = await _wait_for_order(
             exchange,
             order_id,
@@ -76,7 +83,6 @@ async def accept_order_lifecycle(
             poll_attempts=poll_attempts,
             poll_delay=poll_delay,
         )
-        cancel_attempted = True
         await exchange.cancel_order(order_id, symbol)
         try:
             after_cancel = await _wait_for_order(
@@ -92,10 +98,17 @@ async def accept_order_lifecycle(
             # through the single-order endpoint. Verify the same id is absent from
             # open orders instead of treating invisibility as proof of cancellation.
             after_cancel = None
-        open_orders = await exchange.fetch_open_orders(symbol)
+        open_orders = await wait_until_orders_absent(
+            exchange,
+            symbol,
+            owned_ids,
+            poll_attempts,
+            poll_delay,
+        )
         absent_from_open_orders = all(order["id"] != order_id for order in open_orders)
         if not absent_from_open_orders:
             raise RuntimeError("test order is still present in open orders after cancel")
+        cleanup_verified = True
         standard_fields = (
             "id",
             "clientOrderId",
@@ -125,12 +138,20 @@ async def accept_order_lifecycle(
             "identifiers_redacted": True,
         }
     finally:
-        if created is not None and not cancel_attempted:
-            # This is cleanup, not a retry of create_order. If it fails, surface the
-            # error so the operator knows an order may still be open.
-            await exchange.cancel_order(created["id"], symbol)
-        if owns_exchange:
-            await exchange.close()
+        try:
+            if write_started and not cleanup_verified:
+                await cleanup_owned_orders(
+                    exchange,
+                    symbol,
+                    owned_ids,
+                    client_ids,
+                    label="order lifecycle acceptance",
+                    poll_attempts=poll_attempts,
+                    poll_delay=poll_delay,
+                )
+        finally:
+            if owns_exchange:
+                await exchange.close()
 
 
 async def main():

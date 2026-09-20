@@ -4,8 +4,12 @@ import argparse
 import asyncio
 import json
 
-from ccxt_cm import create_exchange
-from examples._bifu_write import credentials_from_environment, load_markets_with_retry
+from examples._bifu_write import (
+    cleanup_owned_orders,
+    load_markets_with_retry,
+    new_client_order_id,
+    prepare_sandbox_exchange,
+)
 
 _CONFIRMATION = "BIFU_TEST_WS_WRITE"
 
@@ -25,8 +29,12 @@ async def _wait_for_private_connection(exchange, timeout=10):
 async def accept_private_streams(symbol, value, *, confirmation):
     if confirmation != _CONFIRMATION:
         raise RuntimeError(f"test WebSocket write requires confirmation {_CONFIRMATION}")
-    exchange = create_exchange("bifu", credentials_from_environment(), mode="pro")
-    exchange.set_sandbox_mode(True)
+    exchange, owns_exchange = prepare_sandbox_exchange(mode="pro")
+    client_order_id = new_client_order_id()
+    client_ids = {client_order_id}
+    owned_ids = set()
+    write_started = False
+    completion_verified = False
     waiters = []
     try:
         await load_markets_with_retry(exchange)
@@ -36,8 +44,16 @@ async def accept_private_streams(symbol, value, *, confirmation):
             asyncio.create_task(exchange.watch_balance()),
         ]
         await _wait_for_private_connection(exchange)
-        created = await exchange.create_mock_order(symbol, "buy", value)
+        write_started = True
+        created = await exchange.create_mock_order(
+            symbol,
+            "buy",
+            value,
+            {"clientOrderId": client_order_id},
+        )
+        owned_ids.add(created["id"])
         orders, trades, balance = await asyncio.wait_for(asyncio.gather(*waiters), timeout=20)
+        completion_verified = True
         return {
             "environment": "test",
             "symbol": symbol,
@@ -71,7 +87,18 @@ async def accept_private_streams(symbol, value, *, confirmation):
         for waiter in waiters:
             if not waiter.done():
                 waiter.cancel()
-        await exchange.close()
+        try:
+            if write_started and not completion_verified:
+                await cleanup_owned_orders(
+                    exchange,
+                    symbol,
+                    owned_ids,
+                    client_ids,
+                    label="private WebSocket acceptance",
+                )
+        finally:
+            if owns_exchange:
+                await exchange.close()
 
 
 async def main():

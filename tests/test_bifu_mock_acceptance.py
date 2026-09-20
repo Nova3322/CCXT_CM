@@ -7,6 +7,8 @@ from examples.accept_bifu_mock_order import accept_mock_order
 
 class FakeMockExchange:
     def __init__(self, *, trades=None, open_orders=None, create_error=None, trade_error=None):
+        self.id = "bifu"
+        self.isSandboxModeEnabled = True
         self.calls = []
         self.trades = trades
         self.open_orders = list(open_orders or [])
@@ -15,6 +17,7 @@ class FakeMockExchange:
         self.closed = False
 
     def set_sandbox_mode(self, enabled):
+        self.isSandboxModeEnabled = enabled
         self.calls.append(("set_sandbox_mode", enabled))
 
     async def create_mock_order(self, symbol, side, value, params):
@@ -130,6 +133,8 @@ async def test_mock_acceptance_does_not_retry_an_unknown_create_result():
             5,
             confirmation="BIFU_TEST_MOCK_WRITE",
             exchange=exchange,
+            poll_attempts=1,
+            poll_delay=0,
         )
 
     create_calls = [call for call in exchange.calls if call[0] == "create_mock_order"]
@@ -192,8 +197,11 @@ async def test_mock_acceptance_cleans_up_when_trade_query_fails():
 @pytest.mark.asyncio
 async def test_mock_acceptance_closes_an_exchange_it_created(monkeypatch):
     exchange = FakeMockExchange()
-    monkeypatch.setattr(mock_acceptance, "create_exchange", lambda *args, **kwargs: exchange)
-    monkeypatch.setattr(mock_acceptance, "credentials_from_environment", lambda: {})
+    monkeypatch.setattr(
+        mock_acceptance,
+        "prepare_sandbox_exchange",
+        lambda _exchange=None, **kwargs: (exchange, True),
+    )
 
     await accept_mock_order(
         "BTC/USDT",
@@ -204,5 +212,4 @@ async def test_mock_acceptance_closes_an_exchange_it_created(monkeypatch):
         poll_delay=0,
     )
 
-    assert exchange.calls[0] == ("set_sandbox_mode", True)
     assert exchange.closed is True

@@ -4,22 +4,15 @@ import argparse
 import asyncio
 import json
 
-from ccxt_cm import create_exchange
-from examples._bifu_write import credentials_from_environment, load_markets_with_retry
+from examples._bifu_write import (
+    cleanup_owned_orders,
+    load_markets_with_retry,
+    new_client_order_id,
+    prepare_sandbox_exchange,
+    wait_until_orders_absent,
+)
 
 _CONFIRMATION = "BIFU_TEST_CANCEL_ALL_WRITE"
-
-
-async def _wait_until_absent(exchange, symbol, owned_ids, poll_attempts, poll_delay):
-    open_orders = []
-    for attempt in range(poll_attempts):
-        open_orders = await exchange.fetch_open_orders(symbol)
-        open_ids = {order["id"] for order in open_orders}
-        if owned_ids.isdisjoint(open_ids):
-            return open_orders
-        if attempt < poll_attempts - 1 and poll_delay:
-            await asyncio.sleep(poll_delay)
-    return open_orders
 
 
 async def accept_cancel_all_orders(
@@ -37,12 +30,13 @@ async def accept_cancel_all_orders(
     if confirmation != _CONFIRMATION:
         raise RuntimeError(f"test write requires confirmation {_CONFIRMATION}")
 
-    owns_exchange = exchange is None
-    if owns_exchange:
-        exchange = create_exchange("bifu", credentials_from_environment(), mode="async")
-        exchange.set_sandbox_mode(True)
-
+    exchange, owns_exchange = prepare_sandbox_exchange(exchange)
+    client_ids = {new_client_order_id() for _ in range(2)}
+    while len(client_ids) < 2:
+        client_ids.add(new_client_order_id())
     created = []
+    owned_ids = set()
+    write_started = False
     cancel_all_verified = False
     try:
         await load_markets_with_retry(exchange)
@@ -50,7 +44,8 @@ async def accept_cancel_all_orders(
         if initial_open_orders:
             raise RuntimeError("test market already has open orders; refusing cancel-all")
 
-        for _ in range(2):
+        write_started = True
+        for client_order_id in sorted(client_ids):
             created.append(
                 await exchange.create_order(
                     symbol,
@@ -58,7 +53,7 @@ async def accept_cancel_all_orders(
                     side,
                     amount,
                     price,
-                    {"postOnly": True},
+                    {"clientOrderId": client_order_id, "postOnly": True},
                 )
             )
         owned_ids = {order["id"] for order in created}
@@ -72,7 +67,7 @@ async def accept_cancel_all_orders(
         canceled = acknowledgements[0]["info"]["canceled"]
         if canceled != 2:
             raise RuntimeError("cancel-all ACK count did not match expected 2")
-        after_cancel = await _wait_until_absent(
+        after_cancel = await wait_until_orders_absent(
             exchange,
             symbol,
             owned_ids,
@@ -102,24 +97,16 @@ async def accept_cancel_all_orders(
         }
     finally:
         try:
-            if not cancel_all_verified and created:
-                for order in created:
-                    try:
-                        await exchange.cancel_order(order["id"], symbol)
-                    except Exception:
-                        # A cancel ACK can fail even when the order has already ended.
-                        # The authoritative cleanup result is the open-order check below.
-                        continue
-                try:
-                    remaining = await exchange.fetch_open_orders(symbol)
-                except Exception as error:
-                    raise RuntimeError(
-                        "could not verify test-order cleanup after failure"
-                    ) from error
-                remaining_ids = {order["id"] for order in remaining}
-                created_ids = {order["id"] for order in created}
-                if not created_ids.isdisjoint(remaining_ids):
-                    raise RuntimeError("a test order may remain open after failed acceptance")
+            if write_started and not cancel_all_verified:
+                await cleanup_owned_orders(
+                    exchange,
+                    symbol,
+                    owned_ids,
+                    client_ids,
+                    label="cancel-all acceptance",
+                    poll_attempts=poll_attempts,
+                    poll_delay=poll_delay,
+                )
         finally:
             if owns_exchange:
                 await exchange.close()

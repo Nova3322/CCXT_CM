@@ -5,6 +5,8 @@ from examples.accept_bifu_amend_orders import accept_amend_orders
 
 class FakeExchange:
     def __init__(self):
+        self.id = "bifu"
+        self.isSandboxModeEnabled = True
         self.calls = []
         self.orders = []
 

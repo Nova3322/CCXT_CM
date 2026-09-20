@@ -3,11 +3,13 @@
 import argparse
 import asyncio
 import json
-import uuid
 from decimal import Decimal, InvalidOperation
 
-from ccxt_cm import create_exchange
-from examples._bifu_write import cleanup_owned_orders, credentials_from_environment
+from examples._bifu_write import (
+    cleanup_owned_orders,
+    new_client_order_id,
+    prepare_sandbox_exchange,
+)
 
 _CONFIRMATION = "BIFU_TEST_MOCK_WRITE"
 
@@ -49,12 +51,8 @@ async def accept_mock_order(
         raise ValueError("mock-order side must be buy or sell")
     _validate_value(value)
 
-    owns_exchange = exchange is None
-    if owns_exchange:
-        exchange = create_exchange("bifu", credentials_from_environment(), mode="async")
-        exchange.set_sandbox_mode(True)
-
-    client_order_id = uuid.uuid4().hex[:16]
+    exchange, owns_exchange = prepare_sandbox_exchange(exchange)
+    client_order_id = new_client_order_id()
     client_ids = {client_order_id}
     owned_ids = set()
     write_started = False
@@ -123,6 +121,8 @@ async def accept_mock_order(
                     owned_ids,
                     client_ids,
                     label="mock-order acceptance",
+                    poll_attempts=poll_attempts,
+                    poll_delay=poll_delay,
                 )
         finally:
             if owns_exchange:

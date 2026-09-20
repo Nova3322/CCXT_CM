@@ -3,14 +3,13 @@
 import argparse
 import asyncio
 import json
-import uuid
 from decimal import Decimal, InvalidOperation
 
-from ccxt_cm import create_exchange
 from examples._bifu_write import (
     cleanup_owned_orders,
-    credentials_from_environment,
     load_markets_with_retry,
+    new_client_order_id,
+    prepare_sandbox_exchange,
     wait_until_orders_absent,
 )
 
@@ -83,14 +82,10 @@ async def accept_amend_orders(
     if side not in ("buy", "sell"):
         raise RuntimeError("side must be buy or sell")
 
-    owns_exchange = exchange is None
-    if owns_exchange:
-        exchange = create_exchange("bifu", credentials_from_environment(), mode="async")
-        exchange.set_sandbox_mode(True)
-
-    client_ids = {uuid.uuid4().hex[:16] for _ in range(2)}
+    exchange, owns_exchange = prepare_sandbox_exchange(exchange)
+    client_ids = {new_client_order_id() for _ in range(2)}
     while len(client_ids) < 2:
-        client_ids.add(uuid.uuid4().hex[:16])
+        client_ids.add(new_client_order_id())
     created = []
     owned_ids = set()
     write_started = False
@@ -239,6 +234,8 @@ async def accept_amend_orders(
                     owned_ids,
                     client_ids,
                     label="amend acceptance",
+                    poll_attempts=poll_attempts,
+                    poll_delay=poll_delay,
                 )
         finally:
             if owns_exchange:

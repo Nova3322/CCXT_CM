@@ -6,6 +6,8 @@ from examples.accept_bifu_order_lifecycle import accept_order_lifecycle
 
 class FakeExchange:
     def __init__(self):
+        self.id = "bifu"
+        self.isSandboxModeEnabled = True
         self.calls = []
         self.fetch_count = 0
 
@@ -91,6 +93,10 @@ async def test_order_lifecycle_creates_queries_cancels_and_redacts_ids():
         poll_delay=0,
     )
 
+    create_params = exchange.calls[1][6]
+    assert create_params["postOnly"] is True
+    assert len(create_params["clientOrderId"]) == 16
+    int(create_params["clientOrderId"], 16)
     assert exchange.calls == [
         ("load_markets",),
         (
@@ -100,7 +106,7 @@ async def test_order_lifecycle_creates_queries_cancels_and_redacts_ids():
             "buy",
             0.1,
             100,
-            {"postOnly": True},
+            create_params,
         ),
         ("fetch_order", "secret-order-id", "BTC/USDT"),
         ("cancel_order", "secret-order-id", "BTC/USDT"),

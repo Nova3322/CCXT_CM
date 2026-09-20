@@ -19,7 +19,7 @@
 | 新交易所示例 | `cm_reference`：仅本机模拟协议，真实 HTTP/WS 收发测试，不是真实交易所 |
 | Antarctic | 参考代码已审计，尚未作为真实适配器发布；见[审计](docs/exchanges/antarctic.md) |
 | 新版做市系统 | 已按指定源码快照分析接入点；本阶段不修改、不接入该系统 |
-| 实盘验收 | 尚未执行；测试不连接真实交易所，也不使用真实密钥 |
+| Bifu 验收 | 公网开发环境和 Sandbox 已完成脱敏验收；生产配置共用同一适配器，但未连接或写入生产账户 |
 
 本库只负责连接、协议转换、能力声明和返回数据。不负责报价、库存、策略、业务风控、订单账本、调度、数据库、告警或资金调拨编排。Python 是首期语言；不承诺 JavaScript/Go 等多语言转译。
 
@@ -166,3 +166,4 @@ uv run python -m examples.public_market_data binance BTC/USDT --connect --watch
 - [第 12 课：Bifu 特殊 `mock`](docs/learning/12-bifu-mock.md)：理解 `SANDBOX_MARKET`、专有方法、买卖数量单位和 Sandbox 账户权限。
 - [第 13 课：Bifu WebSocket](docs/learning/13-bifu-websocket.md)：理解公共/私有实时流、签名鉴权、订单簿断档和可重复验收命令。
 - [Bifu 能力与验收矩阵](docs/acceptance/bifu-capability-matrix.md)：每轮程序测试、人工验收和复审的唯一进度表。
+- [Bifu 最终交付说明](docs/acceptance/bifu-final-delivery.md)：三部分完成范围、最终测试、修复、构建产物和已知边界。
