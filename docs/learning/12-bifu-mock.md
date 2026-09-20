@@ -62,9 +62,12 @@ python -m examples.accept_bifu_mock_order \
 平台最初提供的内网 Key 在公网开发 URL 的私有请求上返回 HTTP 401、`4000 UNAUTHENTICATED`。
 重新生成非内网公网 Key 后，同一适配器已通过 `https://flame-api.bifu.dev` 完成私有只读查询，证明
 公网 Key、URL 和签名均有效；但 `SANDBOX_MARKET` 写入返回 HTTP 403、`4006 SANDBOX_MARKET
-requires Sandbox account`。这表示公网 Key 对应账户尚未开通 Sandbox/MockTrade 权限。失败后的
-只读复核确认没有新增挂单、历史订单或成交。平台开通该权限，或提供已经开通
-Sandbox/MockTrade 权限的公网账户后，再运行上面的验收命令；不需要修改适配器签名或请求结构。
+requires Sandbox account`。失败后的只读复核确认没有新增挂单、历史订单或成交。
+
+平台随后创建了已开通权限的公网 Sandbox 账号。最终在线验收真实完成 5.5 USDT 的模拟买入和
+0.001 BTC 的模拟卖出：两笔创建回执都有 CCXT Order 标准字段并保持 `status=None`，每笔都能查询到
+1 条对应的 CCXT 标准 Trade，而且当前挂单中都不存在该订单。由此可以确认公网账号、签名、买入按
+计价币金额、卖出按基础币数量、标准格式转换和“不进入盘口”的完整链路均已通过。
 
 ## 问题与答案
 
