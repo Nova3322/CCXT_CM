@@ -60,23 +60,22 @@ exchange = create_exchange(
 生产实例不要调用 `set_sandbox_mode(True)`。适配器允许显式生产配置，但在平台提供正式地址前，
 项目不会猜 URL，也不会把测试 Key 当作生产 Key。生产首次验收只做只读调用。
 
-## 4. 当前已经开放的 REST 能力
+## 4. 已完成的 REST 能力
 
-本课更新时，已通过自动化测试的统一方法包括：
+最终交付已完成并测试以下统一方法：
 
-- `load_markets()` / `fetch_markets()`
-- `fetch_ticker()` / `fetch_tickers()`
-- `fetch_order_book()`
-- `fetch_ohlcv()`
-- `fetch_trades()`
-- `fetch_balance()`
-- `fetch_open_orders()` / `fetch_closed_orders()` / `fetch_order()` / `fetch_my_trades()`
-- `create_order()` / `cancel_order()` / `cancel_all_orders()`
-- `create_orders()` / `cancel_orders()`
+- 公共：`load_markets()` / `fetch_markets()`、`fetch_ticker()` / `fetch_tickers()`、
+  `fetch_bids_asks()`、`fetch_order_book()`、`fetch_ohlcv()` 和 `fetch_trades()`。
+- 私有只读：`fetch_balance()`、`fetch_ledger()`、`fetch_open_orders()`、
+  `fetch_closed_orders()`、`fetch_order()` 和 `fetch_my_trades()`。
+- 私有写入：`create_order()` / `create_orders()`、`cancel_order()` / `cancel_orders()` /
+  `cancel_all_orders()`，以及 `edit_order()` / `edit_orders()`。
+- Bifu 专有私有方法：`create_mock_order()`；它不冒充 CCXT 标准 `create_order()`。
 
-私有请求已实现 `X-API-KEY`、毫秒 `X-TS` 和 HMAC-SHA256 小写 hex `X-SIGN`。批量下单和批量
-撤单已经完成自动化与测试环境在线验收；其余 REST、完整异常矩阵和 Bifu 专有 `mock` 方法仍属于
-第一部分进行中的工作；尚未实现的方法不会提前声明为 `has=True`。
+私有请求已实现 `X-API-KEY`、毫秒 `X-TS` 和 HMAC-SHA256 小写 hex `X-SIGN`，完整异常映射、
+自动化测试和测试环境在线验收也已完成。尚未实现的方法不会提前声明为 `has=True`。生产环境与
+测试环境共用同一适配器，但本轮没有生产 URL、生产 Key 或生产在线验收；上线前先做经授权的
+生产只读验收，不直接执行生产写操作。
 
 ## 5. 手动检查环境
 
