@@ -29,7 +29,7 @@
 ### 第三部分最终验收结果（2026-09-20）
 
 第三部分已完成。完整交付证据见 [Bifu 最终交付说明](bifu-final-delivery.md)。本轮针对第一、二部分
-全部能力执行全库回归，最终为 **390 passed**，核心包 statement/branch coverage **91.37%**；
+全部能力执行全库回归，最终为 **391 passed**，核心包 statement/branch coverage **91.37%**；
 144 条 warning 均来自 aiohttp 在 Python 3.14 下的依赖层弃用提示。Ruff 检查、格式检查、
 `compileall`、diff 检查、wheel/sdist 构建和仓库外 wheel 导入均通过。
 

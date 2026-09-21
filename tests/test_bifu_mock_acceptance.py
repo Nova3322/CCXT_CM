@@ -9,6 +9,8 @@ class FakeMockExchange:
     def __init__(self, *, trades=None, open_orders=None, create_error=None, trade_error=None):
         self.id = "bifu"
         self.isSandboxModeEnabled = True
+        sandbox_urls = {"public": "https://test", "private": "https://test"}
+        self.urls = {"api": dict(sandbox_urls), "test": sandbox_urls}
         self.calls = []
         self.trades = trades
         self.open_orders = list(open_orders or [])

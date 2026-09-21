@@ -11,6 +11,22 @@ _PREFLIGHT_ATTEMPTS = 3
 _PREFLIGHT_RETRY_DELAY = 1
 
 
+def _uses_configured_sandbox_endpoints(exchange):
+    urls = getattr(exchange, "urls", None)
+    if not isinstance(urls, dict):
+        return False
+    api_urls = urls.get("api")
+    test_urls = urls.get("test")
+    if not isinstance(api_urls, dict) or not isinstance(test_urls, dict):
+        return False
+    endpoint_names = {"public", "private"}
+    if "ws" in api_urls or "ws" in test_urls:
+        endpoint_names.add("ws")
+    return all(
+        test_urls.get(name) and api_urls.get(name) == test_urls.get(name) for name in endpoint_names
+    )
+
+
 def prepare_sandbox_exchange(exchange=None, *, mode="async"):
     """Return a Bifu sandbox exchange and whether this helper created it."""
     owns_exchange = exchange is None
@@ -22,8 +38,9 @@ def prepare_sandbox_exchange(exchange=None, *, mode="async"):
     if (
         getattr(exchange, "id", None) != "bifu"
         or getattr(exchange, "isSandboxModeEnabled", False) is not True
+        or not _uses_configured_sandbox_endpoints(exchange)
     ):
-        raise RuntimeError("Bifu write acceptance requires a sandbox exchange")
+        raise RuntimeError("Bifu write acceptance requires configured sandbox endpoints")
     return exchange, owns_exchange
 
 

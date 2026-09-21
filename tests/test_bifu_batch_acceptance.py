@@ -7,6 +7,8 @@ class FakeExchange:
     def __init__(self):
         self.id = "bifu"
         self.isSandboxModeEnabled = True
+        sandbox_urls = {"public": "https://test", "private": "https://test"}
+        self.urls = {"api": dict(sandbox_urls), "test": sandbox_urls}
         self.calls = []
         self.closed = False
         self.orders = []

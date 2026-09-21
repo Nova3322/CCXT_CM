@@ -32,10 +32,12 @@
 3. 失败清理只处理本轮订单，并轮询当前挂单确认已清除；不会撤销其他调用方的订单。
 4. `fetch_balance` 明确拒绝 Bifu 未支持的额外参数，不再静默透传。
 5. 环境创建、sandbox 校验、client ID 生成和失败清理集中到 `examples/_bifu_write.py`，删除重复实现。
+6. 写入验收除检查 sandbox 标志外，还逐项核对当前 REST/WS 地址与适配器声明的测试地址；即使
+   sandbox 标志被误设为真，只要仍指向生产地址，就会在任何网络请求前拒绝执行。
 
 ## 自动化与代码质量
 
-- 全库：`390 passed`。
+- 全库：`391 passed`。
 - 核心包 statement/branch coverage：`91.37%`，高于 90% 门槛。
 - Warning：144 条，均为 aiohttp 在 Python 3.14.7 下的依赖层弃用提示，不是适配器失败。
 - `ruff check .`、`ruff format --check .`、`compileall` 和 `git diff --check`：通过。

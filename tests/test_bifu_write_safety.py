@@ -4,9 +4,16 @@ from examples._bifu_write import cleanup_owned_orders, prepare_sandbox_exchange
 
 
 class StubExchange:
-    def __init__(self, exchange_id="bifu", sandbox=True):
+    def __init__(self, exchange_id="bifu", sandbox=True, *, api_url="https://sandbox.example"):
         self.id = exchange_id
         self.isSandboxModeEnabled = sandbox
+        sandbox_urls = {
+            "public": "https://sandbox.example",
+            "private": "https://sandbox.example",
+            "ws": "wss://sandbox.example",
+        }
+        self.urls = {"api": dict(sandbox_urls), "test": sandbox_urls}
+        self.urls["api"]["private"] = api_url
 
 
 def test_prepare_sandbox_exchange_accepts_only_bifu_sandbox_instances():
@@ -23,8 +30,15 @@ def test_prepare_sandbox_exchange_accepts_only_bifu_sandbox_instances():
     [("bifu", False), ("binance", True)],
 )
 def test_prepare_sandbox_exchange_rejects_unsafe_injected_instances(exchange_id, sandbox):
-    with pytest.raises(RuntimeError, match="requires a sandbox exchange"):
+    with pytest.raises(RuntimeError, match="requires configured sandbox endpoints"):
         prepare_sandbox_exchange(StubExchange(exchange_id, sandbox))
+
+
+def test_prepare_sandbox_exchange_rejects_production_url_with_sandbox_flag():
+    exchange = StubExchange(api_url="https://production.example")
+
+    with pytest.raises(RuntimeError, match="requires configured sandbox endpoints"):
+        prepare_sandbox_exchange(exchange)
 
 
 class DelayedOpenOrdersExchange:
