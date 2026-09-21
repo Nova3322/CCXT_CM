@@ -1,9 +1,19 @@
 """Shared retry boundary for Bifu's read-only manual acceptance tools."""
 
 import asyncio
+import os
 import sys
 
 from ccxt import RequestTimeout
+
+
+def credentials_from_environment():
+    """Build a CCXT config without logging or persisting Bifu credentials."""
+    api_key = os.environ.get("BIFU_API_KEY")
+    secret = os.environ.get("BIFU_API_SECRET")
+    if not api_key or not secret:
+        raise RuntimeError("BIFU_API_KEY and BIFU_API_SECRET must be set")
+    return {"apiKey": api_key, "secret": secret, "timeout": 30000}
 
 
 async def retry_readonly_once(first_call, retry_call=None, *, retry_delay=1.0):

@@ -1,21 +1,14 @@
 """Shared safety boundaries for Bifu test-environment write acceptance."""
 
 import asyncio
-import os
 import uuid
 
 from ccxt import NetworkError
 
+from examples._bifu_readonly import credentials_from_environment
+
 _PREFLIGHT_ATTEMPTS = 3
 _PREFLIGHT_RETRY_DELAY = 1
-
-
-def credentials_from_environment():
-    api_key = os.environ.get("BIFU_API_KEY")
-    secret = os.environ.get("BIFU_API_SECRET")
-    if not api_key or not secret:
-        raise RuntimeError("BIFU_API_KEY and BIFU_API_SECRET must be set")
-    return {"apiKey": api_key, "secret": secret, "timeout": 30000}
 
 
 def prepare_sandbox_exchange(exchange=None, *, mode="async"):
@@ -48,6 +41,18 @@ async def load_markets_with_retry(exchange):
             if attempt == _PREFLIGHT_ATTEMPTS - 1:
                 raise
             await asyncio.sleep(_PREFLIGHT_RETRY_DELAY)
+
+
+async def wait_for_order_trades(exchange, order_id, symbol, poll_attempts, poll_delay):
+    """Poll private trades until this run's order has matching evidence."""
+    for attempt in range(poll_attempts):
+        trades = await exchange.fetch_my_trades(symbol, params={"order_id": order_id})
+        matching = [trade for trade in trades if trade.get("order") == order_id]
+        if matching:
+            return matching
+        if attempt < poll_attempts - 1 and poll_delay:
+            await asyncio.sleep(poll_delay)
+    return []
 
 
 async def wait_until_orders_absent(exchange, symbol, owned_ids, poll_attempts, poll_delay):

@@ -9,6 +9,7 @@ from examples._bifu_write import (
     cleanup_owned_orders,
     new_client_order_id,
     prepare_sandbox_exchange,
+    wait_for_order_trades,
 )
 
 _CONFIRMATION = "BIFU_TEST_MOCK_WRITE"
@@ -21,17 +22,6 @@ def _validate_value(value):
             raise ValueError
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ValueError("mock-order value must be a positive finite number") from exc
-
-
-async def _wait_for_trades(exchange, order_id, symbol, attempts, delay):
-    for attempt in range(attempts):
-        trades = await exchange.fetch_my_trades(symbol, params={"order_id": order_id})
-        matching = [trade for trade in trades if trade.get("order") == order_id]
-        if matching:
-            return matching
-        if attempt < attempts - 1 and delay:
-            await asyncio.sleep(delay)
-    return []
 
 
 async def accept_mock_order(
@@ -67,7 +57,7 @@ async def accept_mock_order(
         )
         order_id = created["id"]
         owned_ids.add(order_id)
-        trades = await _wait_for_trades(
+        trades = await wait_for_order_trades(
             exchange,
             order_id,
             symbol,

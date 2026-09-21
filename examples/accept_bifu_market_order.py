@@ -12,6 +12,7 @@ from examples._bifu_write import (
     load_markets_with_retry,
     new_client_order_id,
     prepare_sandbox_exchange,
+    wait_for_order_trades,
 )
 
 _CONFIRMATION = "BIFU_TEST_MARKET_WRITE"
@@ -38,17 +39,6 @@ async def _wait_for_order(exchange, order_id, symbol, poll_attempts, poll_delay)
         if poll_delay:
             await asyncio.sleep(poll_delay)
     return None
-
-
-async def _wait_for_trades(exchange, order_id, symbol, poll_attempts, poll_delay):
-    for attempt in range(poll_attempts):
-        trades = await exchange.fetch_my_trades(symbol, params={"order_id": order_id})
-        matching = [trade for trade in trades if trade.get("order") == order_id]
-        if matching:
-            return matching
-        if attempt < poll_attempts - 1 and poll_delay:
-            await asyncio.sleep(poll_delay)
-    return []
 
 
 async def accept_market_order(
@@ -99,7 +89,13 @@ async def accept_market_order(
         order_id = created["id"]
         owned_ids.add(order_id)
         after_create = await _wait_for_order(exchange, order_id, symbol, poll_attempts, poll_delay)
-        trades = await _wait_for_trades(exchange, order_id, symbol, poll_attempts, poll_delay)
+        trades = await wait_for_order_trades(
+            exchange,
+            order_id,
+            symbol,
+            poll_attempts,
+            poll_delay,
+        )
         open_orders = await exchange.fetch_open_orders(symbol)
         still_open = any(order["id"] == order_id for order in open_orders)
         cleanup_attempted = False

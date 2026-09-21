@@ -3,20 +3,11 @@
 import argparse
 import asyncio
 import json
-import os
 
 from ccxt import OrderNotFound
 
 from ccxt_cm import create_exchange
-from examples._bifu_readonly import retry_readonly_once
-
-
-def _credentials_from_environment():
-    api_key = os.environ.get("BIFU_API_KEY")
-    secret = os.environ.get("BIFU_API_SECRET")
-    if not api_key or not secret:
-        raise RuntimeError("BIFU_API_KEY and BIFU_API_SECRET must be set")
-    return {"apiKey": api_key, "secret": secret, "timeout": 30000}
+from examples._bifu_readonly import credentials_from_environment, retry_readonly_once
 
 
 def _sorted_statuses(items):
@@ -27,7 +18,7 @@ def _sorted_statuses(items):
 async def inspect_orders(symbol="BTC/USDT", *, exchange=None, retry_delay=1.0):
     owns_exchange = exchange is None
     if owns_exchange:
-        exchange = create_exchange("bifu", _credentials_from_environment(), mode="async")
+        exchange = create_exchange("bifu", credentials_from_environment(), mode="async")
         exchange.set_sandbox_mode(True)
     try:
         orders = await retry_readonly_once(
